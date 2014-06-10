@@ -58,6 +58,7 @@ typedef struct property {
   const char *name;       ///< Textual description
   prop_type_t type;       ///< Type
   int         islist;     ///< Is a list
+  const char *istime;     ///< Time field format
   size_t      off;        ///< Offset into object
   int         opts;       ///< Options
 

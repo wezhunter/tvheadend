@@ -113,6 +113,7 @@ tvheadend.IdNodeField = function(conf)
     this.text = conf.caption || this.id;
     this.type = conf.type;
     this.list = conf.list;
+    this.time = conf.time;
     this.rdonly = conf.rdonly;
     this.wronly = conf.wronly;
     this.wronce = conf.wronce;
@@ -157,6 +158,14 @@ tvheadend.IdNodeField = function(conf)
 
     this.renderer = function()
     {
+        if (this.time) {
+          var f = this.time.replace('%F', 'Y-m-d').replace('%T', 'H:i:s').replace('%M', 'i').replace('S', '%s').replace('%', '');
+          return function (v) {
+            var dt = new Date(v * 1000);
+            return dt.format(f);
+          }
+        }
+
         if (!this.store)
             return null;
 

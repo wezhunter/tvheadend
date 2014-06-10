@@ -296,6 +296,8 @@ prop_serialize
     htsmsg_add_str(m, "caption",  pl->name);
     if (pl->islist)
       htsmsg_add_u32(m, "list", 1);
+    if (pl->istime)
+      htsmsg_add_str(m, "time", pl->istime);
 
     /* Default */
     // TODO: currently no support for list defaults
