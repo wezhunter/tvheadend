@@ -150,6 +150,7 @@ int       idnode_write0 (idnode_t *self, htsmsg_t *m, int optmask, int dosave);
 
 const char *idnode_get_str (idnode_t *self, const char *key );
 int         idnode_get_u32 (idnode_t *self, const char *key, uint32_t *u32);
+int         idnode_get_s64 (idnode_t *self, const char *key, int64_t *s64);
 int         idnode_get_bool(idnode_t *self, const char *key, int *b);
 
 void idnode_filter_add_str

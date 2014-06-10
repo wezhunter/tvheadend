@@ -36,6 +36,7 @@ const static struct strtab typetab[] = {
   { "str",   PT_STR },
   { "u16",   PT_U16 },
   { "u32",   PT_U32 },
+  { "s64",   PT_S64 },
   { "dbl",   PT_DBL },
 };
 
@@ -68,9 +69,9 @@ prop_write_values
   const void *new;
   double dbl;
   int i;
-  int64_t s64;
-  uint32_t u32;
   uint16_t u16;
+  uint32_t u32;
+  int64_t s64;
 #define PROP_UPDATE(v, t)\
   new = &v;\
   if (!p->set && (*((t*)cur) != *((t*)new))) {\
@@ -125,6 +126,12 @@ prop_write_values
         if (htsmsg_field_get_u32(f, &u32))
           continue;
         PROP_UPDATE(u32, uint32_t);
+        break;
+      }
+      case PT_S64: {
+        if (htsmsg_field_get_s64(f, &s64))
+          continue;
+        PROP_UPDATE(s64, int64_t);
         break;
       }
       case PT_DBL: {
@@ -209,6 +216,9 @@ prop_read_value
       break;
     case PT_U32:
       htsmsg_add_u32(m, name, *(uint32_t *)val);
+      break;
+    case PT_S64:
+      htsmsg_add_s64(m, name, *(int64_t *)val);
       break;
     case PT_U16:
       htsmsg_add_u32(m, name, *(uint16_t *)val);
@@ -301,6 +311,9 @@ prop_serialize
         break;
       case PT_U32:
         htsmsg_add_u32(m, "default", pl->def.u32);
+        break;
+      case PT_S64:
+        htsmsg_add_u32(m, "default", pl->def.s64);
         break;
       case PT_DBL:
         htsmsg_add_dbl(m, "default", pl->def.d);

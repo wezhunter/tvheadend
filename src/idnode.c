@@ -314,8 +314,8 @@ idnode_get_str
  * Get field as unsigned int
  */
 int
-idnode_get_u32
-  ( idnode_t *self, const char *key, uint32_t *u32 )
+idnode_get_s64
+  ( idnode_t *self, const char *key, int64_t *s64 )
 {
   const property_t *p = idnode_find_prop(self, key);
   if (p->islist) return 1;
@@ -328,13 +328,16 @@ idnode_get_u32
     switch (p->type) {
       case PT_INT:
       case PT_BOOL:
-        *u32 = *(int*)ptr;
+        *s64 = *(int*)ptr;
         return 0;
       case PT_U16:
-        *u32 = *(uint32_t*)ptr;
+        *s64 = *(uint32_t*)ptr;
         return 0;
       case PT_U32:
-        *u32 = *(uint16_t*)ptr;
+        *s64 = *(uint16_t*)ptr;
+        return 0;
+      case PT_S64:
+        *s64 = *(int64_t*)ptr;
         return 0;
       default:
         break;
@@ -470,14 +473,18 @@ idnode_cmp_sort
     case PT_U16:
     case PT_U32:
     case PT_BOOL:
+    case PT_S64:
       {
-        uint32_t u32a = 0, u32b = 0;
-        idnode_get_u32(ina, sort->key, &u32a);
-        idnode_get_u32(inb, sort->key, &u32b);
+        int64_t s64a = 0, s64b = 0;
+        idnode_get_s64(ina, sort->key, &s64a);
+        idnode_get_s64(inb, sort->key, &s64b);
         if (sort->dir == IS_ASC)
-          return u32a - u32b;
+          s64a -= s64b;
         else
-          return u32b - u32a;
+          s64a = s64b - s64a;
+        if (s64a < 0) return -1;
+        if (s64a > 0) return 1;
+        return 0;
       }
       break;
     case PT_DBL:
@@ -523,11 +530,9 @@ idnode_filter
           break;
       }
     } else if (f->type == IF_NUM || f->type == IF_BOOL) {
-      uint32_t u32;
       int64_t a, b;
-      if (idnode_get_u32(in, f->key, &u32))
+      if (idnode_get_s64(in, f->key, &a))
         return 1;
-      a = u32;
       b = (f->type == IF_NUM) ? f->u.n : f->u.b;
       switch (f->comp) {
         case IC_IN:

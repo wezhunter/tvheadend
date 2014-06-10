@@ -34,6 +34,7 @@ typedef enum {
   PT_INT,
   PT_U16,
   PT_U32,
+  PT_S64,
   PT_DBL,
 } prop_type_t;
 
@@ -75,6 +76,7 @@ typedef struct property {
     uint16_t    u16; // PT_U16
     uint32_t    u32; // PR_U32
     double      d;   // PT_DBL
+    int64_t     s64; // PT_S64
   } def;
 
   /* Notification callback */
