@@ -283,6 +283,8 @@ struct mpegts_network
   int      mn_skipinitscan;
   char    *mn_charset;
   int      mn_idlescan;
+  int      mn_autoclean_svc;
+  int      mn_autoclean_mux;
 };
 
 typedef enum mpegts_mux_scan_state
@@ -312,6 +314,12 @@ struct mpegts_mux
   mpegts_network_t        *mm_network;
   uint16_t                mm_onid;
   uint16_t                mm_tsid;
+
+  /*
+   * Versioning
+   */
+  int64_t mm_created;
+  int64_t mm_updated;
 
   /*
    * Services
@@ -403,6 +411,12 @@ struct mpegts_service
   uint16_t s_dvb_servicetype;
   char    *s_dvb_charset;
   uint16_t s_dvb_prefcapid;
+
+  /*
+   * History
+   */
+  int64_t s_dvb_created;
+  int64_t s_dvb_updated;
 
   /*
    * EIT/EPG control
