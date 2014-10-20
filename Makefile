@@ -27,8 +27,8 @@ PROG    := $(BUILDDIR)/tvheadend
 # Common compiler flags
 #
 
-CFLAGS  += -g -O2 -Wunused-result
-CFLAGS  += -Wall -Werror -Wwrite-strings -Wno-deprecated-declarations
+CFLAGS  += -g -O2 -Wunused-value
+CFLAGS  += -Wall -Wwrite-strings -Wno-deprecated-declarations
 CFLAGS  += -Wmissing-prototypes
 CFLAGS  += -fms-extensions -funsigned-char -fno-strict-aliasing
 CFLAGS  += -D_FILE_OFFSET_BITS=64
