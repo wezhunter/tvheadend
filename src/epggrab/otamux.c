@@ -198,10 +198,12 @@ epggrab_ota_start ( epggrab_ota_mux_t *om, mpegts_mux_t *mm )
   int grace;
 
   /* In pending queue? Remove.. */
-  if (om->om_q_type == EPGGRAB_OTA_MUX_PENDING)
+  if (om->om_q_type == EPGGRAB_OTA_MUX_PENDING) {
     TAILQ_REMOVE(&epggrab_ota_pending, om, om_q_link);
-  else
+  }
+  else {
     assert(om->om_q_type == EPGGRAB_OTA_MUX_IDLE);
+  }
 
   TAILQ_INSERT_TAIL(&epggrab_ota_active, om, om_q_link);
   om->om_q_type = EPGGRAB_OTA_MUX_ACTIVE;
@@ -302,7 +304,7 @@ epggrab_ota_register
       save = 1;
     }
   }
-  
+
   /* Find module entry */
   LIST_FOREACH(map, &ota->om_modules, om_link)
     if (map->om_module == mod)
@@ -682,7 +684,7 @@ epggrab_ota_load_one
   epggrab_ota_mux_t *ota;
   epggrab_ota_map_t *map;
   const char *id;
-  
+
   mm = mpegts_mux_find(uuid);
   if (!mm) {
     hts_settings_remove("epggrab/otamux/%s", uuid);
@@ -704,14 +706,14 @@ epggrab_ota_load_one
     return;
   }
   htsmsg_get_u32(c, "complete", (uint32_t *)&ota->om_complete);
-  
+
   if (!(l = htsmsg_get_list(c, "modules"))) return;
   HTSMSG_FOREACH(f, l) {
     if (!(e   = htsmsg_field_get_map(f))) continue;
     if (!(id  = htsmsg_get_str(e, "id"))) continue;
     if (!(mod = (epggrab_module_ota_t*)epggrab_module_find_by_id(id)))
       continue;
-    
+
     map = calloc(1, sizeof(epggrab_ota_map_t));
     RB_INIT(&map->om_svcs);
     map->om_module   = mod;
@@ -755,12 +757,12 @@ epggrab_ota_init ( void )
   if (!lstat(path, &st))
     if (!S_ISDIR(st.st_mode))
       hts_settings_remove("epggrab/otamux");
-  
+
   /* Load config */
   if ((c = hts_settings_load_r(1, "epggrab/otamux"))) {
     HTSMSG_FOREACH(f, c) {
       if (!(m  = htsmsg_field_get_map(f))) continue;
-      epggrab_ota_load_one(f->hmf_name, m); 
+      epggrab_ota_load_one(f->hmf_name, m);
     }
     htsmsg_destroy(c);
   }

@@ -129,7 +129,7 @@ typedef struct ca_info {
   uint16_t seq;		// sequence / service id number
 } ca_info_t;
 
-/** 
+/**
  * capmt descriptor
  */
 typedef struct capmt_descriptor {
@@ -139,7 +139,7 @@ typedef struct capmt_descriptor {
 } __attribute__((packed)) capmt_descriptor_t;
 
 /**
- * capmt header structure 
+ * capmt header structure
  */
 typedef struct capmt_header {
   uint8_t  capmt_indicator[6];
@@ -154,7 +154,7 @@ typedef struct capmt_header {
 } __attribute__((packed)) capmt_header_t;
 
 /**
- * caid <-> ecm mapping 
+ * caid <-> ecm mapping
  */
 typedef struct capmt_caid_ecm {
   /** ca system id */
@@ -633,10 +633,13 @@ capmt_queue_msg
   sbuf_append(&msg->cm_sb, buf, len);
   msg->cm_adapter = adapter;
   msg->cm_sid     = sid;
-  if (flags & CAPMT_MSG_FAST)
+  if (flags & CAPMT_MSG_FAST) {
     TAILQ_INSERT_HEAD(&capmt->capmt_writeq, msg, cm_link);
+  }
   else
+  {
     TAILQ_INSERT_TAIL(&capmt->capmt_writeq, msg, cm_link);
+  }
   tvh_write(capmt->capmt_pipe.wr, "c", 1);
 }
 
@@ -668,7 +671,7 @@ capmt_flush_queue(capmt_t *capmt, int del_only)
 /**
  *
  */
-static void 
+static void
 capmt_send_stop(capmt_service_t *t)
 {
   mpegts_service_t *s = (mpegts_service_t *)t->td_service;
@@ -722,7 +725,7 @@ capmt_send_stop(capmt_service_t *t)
     buf[9]  = 1;
     buf[10] = ((pos - 5 - 12) & 0xF00) >> 8;
     buf[11] = ((pos - 5 - 12) & 0xFF);
-  
+
     capmt_queue_msg(capmt, t->ct_adapter, s->s_dvb_service_id,
                     buf, pos, CAPMT_MSG_CLEAR);
   }
@@ -732,7 +735,7 @@ capmt_send_stop(capmt_service_t *t)
  * global_lock is held
  * s_stream_mutex is held
  */
-static void 
+static void
 capmt_service_destroy(th_descrambler_t *td)
 {
   capmt_service_t *ct = (capmt_service_t *)td;
@@ -751,7 +754,7 @@ capmt_service_destroy(th_descrambler_t *td)
   if (!oscam_new)
     capmt_send_stop(ct);
 
-  while (!LIST_EMPTY(&ct->ct_caid_ecm)) { 
+  while (!LIST_EMPTY(&ct->ct_caid_ecm)) {
     /* List Deletion. */
     cce = LIST_FIRST(&ct->ct_caid_ecm);
     LIST_REMOVE(cce, cce_link);
@@ -1119,7 +1122,7 @@ show_connection(capmt_t *capmt, const char *what)
 }
 
 #if CONFIG_LINUXDVB
-static void 
+static void
 handle_ca0(capmt_t *capmt) {
   int i, ret, recvsock, adapter, nfds, cmd_size;
   uint8_t buf[256];
@@ -1184,7 +1187,7 @@ handle_ca0(capmt_t *capmt) {
         capmt->capmt_adapters[adapter].ca_sock = -1;
         continue;
       }
-      
+
       if (ret < 0)
         continue;
 
@@ -1251,12 +1254,12 @@ handle_single(capmt_t *capmt)
         capmt_flush_queue(capmt, 0);
         continue;
       }
-      
+
       tvhtrace("capmt", "%s: thread received shutdown", capmt_name(capmt));
       capmt->capmt_running = 0;
       continue;
     }
-    
+
     if (reconnect != capmt->capmt_sock_reconnect[0]) {
       buffer.sb_bswap = 0;
       sbuf_reset(&buffer, 1024);
@@ -1272,7 +1275,7 @@ handle_single(capmt_t *capmt)
       capmt_poll_rem(capmt, recvsock);
       break;
     }
-    
+
     if (ret < 0)
       continue;
 
@@ -1308,7 +1311,7 @@ handle_single(capmt_t *capmt)
 }
 
 #if CONFIG_LINUXDVB
-static void 
+static void
 handle_ca0_wrapper(capmt_t *capmt)
 {
   uint8_t buffer[18];
@@ -1380,7 +1383,7 @@ capmt_create_udp_socket(capmt_t *capmt, int *socket, int port)
  *
  */
 static void *
-capmt_thread(void *aux) 
+capmt_thread(void *aux)
 {
   capmt_t *capmt = aux;
   struct timespec ts;
@@ -1406,7 +1409,7 @@ capmt_thread(void *aux)
       caclient_set_status((caclient_t *)capmt, CACLIENT_STATUS_NONE);
     else
       caclient_set_status((caclient_t *)capmt, CACLIENT_STATUS_READY);
-    
+
     pthread_mutex_lock(&capmt->capmt_mutex);
 
     while(capmt->capmt_running && capmt->cac_enabled == 0)
@@ -1631,7 +1634,7 @@ capmt_send_request(capmt_service_t *ct, int lm)
     .capmt_indicator        = { 0x9F, 0x80, 0x32, 0x82, 0x00, 0x00 },
     .capmt_list_management  = lm,
     .program_number         = sid,
-    .version_number         = 0, 
+    .version_number         = 0,
     .current_next_indicator = 0,
     .program_info_length    = 0,
     .capmt_cmd_id           = CAPMT_CMD_OK_DESCRAMBLING,
@@ -1640,49 +1643,49 @@ capmt_send_request(capmt_service_t *ct, int lm)
   pos += sizeof(head);
 
   if (capmt->capmt_oscam != CAPMT_OSCAM_SO_WRAPPER) {
-    capmt_descriptor_t dmd = { 
-      .cad_type = CAPMT_DESC_DEMUX, 
+    capmt_descriptor_t dmd = {
+      .cad_type = CAPMT_DESC_DEMUX,
       .cad_length = 0x02,
-      .cad_data = { 
+      .cad_data = {
         0, adapter_num }};
     memcpy(&buf[pos], &dmd, dmd.cad_length + 2);
     pos += dmd.cad_length + 2;
   }
 
-  capmt_descriptor_t prd = { 
-    .cad_type = CAPMT_DESC_PRIVATE, 
+  capmt_descriptor_t prd = {
+    .cad_type = CAPMT_DESC_PRIVATE,
     .cad_length = 0x08,
-    .cad_data = { 0x00, 0x00, 0x00, 0x00, // enigma namespace goes here              
+    .cad_data = { 0x00, 0x00, 0x00, 0x00, // enigma namespace goes here
       transponder >> 8, transponder & 0xFF,
       onid >> 8, onid & 0xFF }};
   memcpy(&buf[pos], &prd, prd.cad_length + 2);
   pos += prd.cad_length + 2;
 
   if (capmt->capmt_oscam == CAPMT_OSCAM_SO_WRAPPER) {
-    capmt_descriptor_t dmd = { 
-      .cad_type = CAPMT_DESC_DEMUX, 
+    capmt_descriptor_t dmd = {
+      .cad_type = CAPMT_DESC_DEMUX,
       .cad_length = 0x02,
-      .cad_data = { 
+      .cad_data = {
         1 << adapter_num, adapter_num }};
     memcpy(&buf[pos], &dmd, dmd.cad_length + 2);
     pos += dmd.cad_length + 2;
   }
 
-  capmt_descriptor_t ecd = { 
-    .cad_type = CAPMT_DESC_PID, 
+  capmt_descriptor_t ecd = {
+    .cad_type = CAPMT_DESC_PID,
     .cad_length = 0x02,
-    .cad_data = { 
+    .cad_data = {
       pmtpid >> 8, pmtpid & 0xFF }};
   memcpy(&buf[pos], &ecd, ecd.cad_length + 2);
   pos += ecd.cad_length + 2;
 
   capmt_caid_ecm_t *cce2;
   LIST_FOREACH(cce2, &ct->ct_caid_ecm, cce_link) {
-    capmt_descriptor_t cad = { 
-      .cad_type = 0x09, 
+    capmt_descriptor_t cad = {
+      .cad_type = 0x09,
       .cad_length = 0x04,
-      .cad_data = { 
-        cce2->cce_caid   >> 8,        cce2->cce_caid   & 0xFF, 
+      .cad_data = {
+        cce2->cce_caid   >> 8,        cce2->cce_caid   & 0xFF,
         cce2->cce_ecmpid >> 8 | 0xE0, cce2->cce_ecmpid & 0xFF}};
     if (cce2->cce_providerid) { //we need to add provider ID to the data
       if (cce2->cce_caid >> 8 == 0x01) {
@@ -1718,7 +1721,7 @@ capmt_send_request(capmt_service_t *ct, int lm)
       cce2->cce_providerid, cce2->cce_providerid);
   }
 
-  uint8_t end[] = { 
+  uint8_t end[] = {
     0x01, (ct->ct_seq >> 8) & 0xFF, ct->ct_seq & 0xFF, 0x00, 0x06 };
   memcpy(&buf[pos], end, sizeof(end));
   pos += sizeof(end);
@@ -1792,7 +1795,7 @@ capmt_service_start(caclient_t *cac, service_t *s)
   elementary_stream_t *st;
   int tuner = -1, i, change = 0;
   char buf[512];
-  
+
   lock_assert(&global_lock);
 
   /* Validate */
