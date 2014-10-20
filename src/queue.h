@@ -22,6 +22,8 @@
 #define	LIST_EMPTY(head)		((head)->lh_first == NULL)
 #endif
 
+#define TAILQ_END(head)                 NULL
+
 #ifndef LIST_FIRST
 #define	LIST_FIRST(head)		((head)->lh_first)
 #endif
@@ -75,6 +77,9 @@
         (*(((struct headname *)((elm)->field.tqe_prev))->tqh_last))
 #endif
 
+#define TAILQ_EMPTY(head)                                               \
+        (TAILQ_FIRST(head) == TAILQ_END(head))
+
 #ifndef TAILQ_FOREACH_REVERSE
 #define	TAILQ_FOREACH_REVERSE(var, head, headname, field)		\
 	for ((var) = (*(((struct headname *)((head)->tqh_last))->tqh_last));	\
@@ -91,7 +96,7 @@
            (oldhead)->lh_first->field.le_prev = &(newhead)->lh_first;	\
 	}								\
         (newhead)->lh_first = (oldhead)->lh_first;			\
-} while (0) 
+} while (0)
 
 #define LIST_INSERT_SORTED(head, elm, field, cmpfunc) do {	\
         if(LIST_EMPTY(head)) {					\
@@ -156,7 +161,7 @@
         } else { \
           TAILQ_INIT(newhead);\
         }\
-} while (/*CONSTCOND*/0) 
- 
+} while (/*CONSTCOND*/0)
+
 
 #endif /* HTSQ_H */
