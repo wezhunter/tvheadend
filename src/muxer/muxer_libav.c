@@ -49,11 +49,15 @@ lav_muxer_write(void *opaque, uint8_t *buf, int buf_size)
 {
   int r;
   lav_muxer_t *lm = (lav_muxer_t*)opaque;
-  
+
   r = write(lm->lm_fd, buf, buf_size);
-  lm->m_errors += (r != buf_size);
+  if (r != buf_size)
+    lm->m_errors++;
   
-  return r;
+  /* No room to notify about errors here. */
+  /* We need to complete av_write_trailer() to free */
+  /* all associated structures. */
+  return buf_size;
 }
 
 
@@ -388,6 +392,7 @@ lav_muxer_write_pkt(muxer_t *m, streaming_message_type_t smt, void *data)
     av_init_packet(&packet);
 
     if(lm->lm_h264_filter && st->codec->codec_id == AV_CODEC_ID_H264) {
+      free_data = 1;
       if(av_bitstream_filter_filter(lm->lm_h264_filter,
 				    st->codec, 
 				    NULL, 
@@ -397,9 +402,10 @@ lav_muxer_write_pkt(muxer_t *m, streaming_message_type_t smt, void *data)
 				    pktbuf_len(pkt->pkt_payload), 
 				    pkt->pkt_frametype < PKT_P_FRAME) < 0) {
 	tvhlog(LOG_WARNING, "libav",  "Failed to filter bitstream");
+	if (packet.data != pktbuf_ptr(pkt->pkt_payload))
+	  av_free(packet.data);
 	break;
       }
-      free_data = 1;
     } else if (st->codec->codec_id == AV_CODEC_ID_AAC) {
       /* remove ADTS header */
       packet.data = pktbuf_ptr(pkt->pkt_payload) + 7;
@@ -421,7 +427,7 @@ lav_muxer_write_pkt(muxer_t *m, streaming_message_type_t smt, void *data)
     if((rc = av_interleaved_write_frame(oc, &packet)))
       tvhlog(LOG_WARNING, "libav",  "Failed to write frame");
 
-    if(free_data)
+    if(free_data && packet.data != pktbuf_ptr(pkt->pkt_payload))
       av_free(packet.data);
 
     break;
