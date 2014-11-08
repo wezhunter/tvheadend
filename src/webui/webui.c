@@ -253,7 +253,7 @@ http_stream_run(http_connection_t *hc, profile_chain_t *prch,
   tp.tv_usec = 0;
   setsockopt(hc->hc_fd, SOL_SOCKET, SO_SNDTIMEO, &tp, sizeof(tp));
 
-  while(run && tvheadend_running) {
+  while(!hc->hc_shutdown && run && tvheadend_running) {
     pthread_mutex_lock(&sq->sq_mutex);
     sm = TAILQ_FIRST(&sq->sq_queue);
     if(sm == NULL) {      
@@ -262,23 +262,22 @@ http_stream_run(http_connection_t *hc, profile_chain_t *prch,
       ts.tv_nsec = tp.tv_usec * 1000;
 
       if(pthread_cond_timedwait(&sq->sq_cond, &sq->sq_mutex, &ts) == ETIMEDOUT) {
-          timeouts++;
+        timeouts++;
 
-          //Check socket status
-          getsockopt(hc->hc_fd, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen);  
-          if (err) {
-              tvhlog(LOG_DEBUG, "webui",  "Stop streaming %s, client hung up", hc->hc_url_orig);
-              run = 0;
-          } else if(timeouts >= grace) {
-              tvhlog(LOG_WARNING, "webui",  "Stop streaming %s, timeout waiting for packets", hc->hc_url_orig);
-              run = 0;
-          }
+        /* Check socket status */
+        if (getsockopt(hc->hc_fd, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen) || err) {
+          tvhlog(LOG_DEBUG, "webui",  "Stop streaming %s, client hung up", hc->hc_url_orig);
+          run = 0;
+        } else if(timeouts >= grace) {
+          tvhlog(LOG_WARNING, "webui",  "Stop streaming %s, timeout waiting for packets", hc->hc_url_orig);
+          run = 0;
+        }
       }
       pthread_mutex_unlock(&sq->sq_mutex);
       continue;
     }
 
-    timeouts = 0; //Reset timeout counter
+    timeouts = 0; /* Reset timeout counter */
     TAILQ_REMOVE(&sq->sq_queue, sm, sm_link);
     pthread_mutex_unlock(&sq->sq_mutex);
 
@@ -414,7 +413,7 @@ http_tag_playlist(http_connection_t *hc, channel_tag_t *tag)
 
   if(hc->hc_access == NULL ||
      access_verify2(hc->hc_access, ACCESS_STREAMING))
-    return HTTP_STATUS_NOT_ALLOWED;
+    return HTTP_STATUS_UNAUTHORIZED;
 
   hq = &hc->hc_reply;
   host = http_arg_get(&hc->hc_args, "Host");
@@ -453,7 +452,7 @@ http_tag_list_playlist(http_connection_t *hc)
 
   if(hc->hc_access == NULL ||
      access_verify2(hc->hc_access, ACCESS_STREAMING))
-    return HTTP_STATUS_NOT_ALLOWED;
+    return HTTP_STATUS_UNAUTHORIZED;
 
   hq = &hc->hc_reply;
   host = http_arg_get(&hc->hc_args, "Host");
@@ -505,7 +504,7 @@ http_channel_list_playlist(http_connection_t *hc)
 
   if(hc->hc_access == NULL ||
      access_verify2(hc->hc_access, ACCESS_STREAMING))
-    return HTTP_STATUS_NOT_ALLOWED;
+    return HTTP_STATUS_UNAUTHORIZED;
 
   hq = &hc->hc_reply;
   host = http_arg_get(&hc->hc_args, "Host");
@@ -1061,7 +1060,7 @@ page_play(http_connection_t *hc, const char *remain, void *opaque)
      (access_verify2(hc->hc_access, ACCESS_STREAMING) &&
       access_verify2(hc->hc_access, ACCESS_ADVANCED_STREAMING) &&
       access_verify2(hc->hc_access, ACCESS_RECORDER)))
-    return HTTP_STATUS_NOT_ALLOWED;
+    return HTTP_STATUS_UNAUTHORIZED;
 
   playlist = http_arg_get(&hc->hc_req_args, "playlist");
   if (playlist) {
@@ -1104,7 +1103,7 @@ page_dvrfile(http_connection_t *hc, const char *remain, void *opaque)
      (access_verify2(hc->hc_access, ACCESS_STREAMING) &&
       access_verify2(hc->hc_access, ACCESS_ADVANCED_STREAMING) &&
       access_verify2(hc->hc_access, ACCESS_RECORDER)))
-    return HTTP_STATUS_NOT_ALLOWED;
+    return HTTP_STATUS_UNAUTHORIZED;
 
   pthread_mutex_lock(&global_lock);
 
@@ -1228,7 +1227,7 @@ page_imagecache(http_connection_t *hc, const char *remain, void *opaque)
       access_verify2(hc->hc_access, ACCESS_STREAMING) &&
       access_verify2(hc->hc_access, ACCESS_ADVANCED_STREAMING) &&
       access_verify2(hc->hc_access, ACCESS_RECORDER)))
-    return HTTP_STATUS_NOT_ALLOWED;
+    return HTTP_STATUS_UNAUTHORIZED;
 
   if(sscanf(remain, "%d", &id) != 1)
     return HTTP_STATUS_BAD_REQUEST;

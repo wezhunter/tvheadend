@@ -120,20 +120,30 @@ tvheadend.epgDetails = function(event) {
       content += '<div class="x-epg-meta">Content Type: ' + genre.join(', ') + '</div>';
     }
 
-    content += '<div class="x-epg-action"><a target="_blank" href="http://akas.imdb.com/find?q=' + event.title + '">Search IMDB</a></div>';
     content += '<div id="related"></div>';
     content += '<div id="altbcast"></div>';
     
-    now = new Date();
-    if (event.start < now && event.stop > now) {
-        var title = event.title;
-        if (event.episodeOnscreen)
-          title += ' / ' + event.episodeOnscreen;
-        content += '<div class="x-epg-action"><a href="play/stream/channel/' + event.channelUuid +
-                   '?title=' + encodeURIComponent(title) + '">Play</a></div>';
+    var now = new Date();
+    var buttons = [];
+    var recording = event.dvrState.indexOf('recording') == 0;
+
+    if (!recording) {
+        buttons.push(new Ext.Button({
+            disabled: !event.title,
+            handler: searchIMDB,
+            iconCls: 'find',
+            tooltip: 'Search IMDB (for title)',
+            text: "Search IMDB"
+        }));
     }
 
-    var buttons = [];
+    buttons.push(new Ext.Button({
+        disabled: event.start > now || event.stop < now,
+        handler: playProgram,
+        iconCls: 'control_play',
+        tooltip: 'Play this program',
+        text: "Play program"
+    }));
 
     if (tvheadend.accessUpdate.dvr) {
 
@@ -144,7 +154,7 @@ tvheadend.epgDetails = function(event) {
             id: 'key',
             url: 'api/idnode/load',
             baseParams: {
-                enum: 1,
+                'enum': 1,
                 'class': 'dvrconfig'
             },
             sortInfo: {
@@ -154,6 +164,15 @@ tvheadend.epgDetails = function(event) {
         });
         store.load();
 
+        if (recording) {
+          buttons.push(new Ext.Button({
+              handler: stopDVR,
+              iconCls: 'cancel',
+              tooltip: 'Stop recording of this program',
+              text: "Stop DVR"
+          }));
+        }
+
         var confcombo = new Ext.form.ComboBox({
             store: store,
             triggerAction: 'all',
@@ -161,7 +180,7 @@ tvheadend.epgDetails = function(event) {
             valueField: 'key',
             displayField: 'val',
             name: 'config_name',
-            emptyText: '(default)',
+            emptyText: '(default DVR Profile)',
             value: '',
             editable: false
         });
@@ -169,10 +188,16 @@ tvheadend.epgDetails = function(event) {
         buttons.push(confcombo);
         buttons.push(new Ext.Button({
             handler: recordEvent,
-            text: "Record program"
+            iconCls: 'rec',
+            tooltip: 'Record now this program',
+            text: 'Record program'
         }));
         buttons.push(new Ext.Button({
             handler: recordSeries,
+            iconCls: 'autoRec',
+            tooltip: 'Create an automatic recording entry for this program that will '
+                 + 'record all future programmes that matches '
+                 + 'the current query.',
             text: event.serieslinkId ? "Record series" : "Autorec"
         }));
 
@@ -182,13 +207,15 @@ tvheadend.epgDetails = function(event) {
             handler: function() { win.close(); },
             text: "Close"
         }));
+
     }
 
     var win = new Ext.Window({
         title: 'Broadcast Details',
+        iconCls: 'broadcast_details',
         layout: 'fit',
-        width: 500,
-        height: 300,
+        width: 600,
+        height: 400,
         constrainHeader: true,
         buttons: buttons,
         buttonAlign: 'center',
@@ -197,12 +224,37 @@ tvheadend.epgDetails = function(event) {
     });
     win.show();
 
+    function searchIMDB() {
+        window.open('http://akas.imdb.com/find?q=' +
+                    encodeURIComponent(event.title), '_blank');
+    }
+
+    function playProgram() {
+        var title = event.title;
+        if (event.episodeOnscreen)
+          title += ' / ' + event.episodeOnscreen;
+        window.open('play/stream/channel/' + event.channelUuid +
+                    '?title=' + encodeURIComponent(title), '_blank');
+    }
+
     function recordEvent() {
         record('api/dvr/entry/create_by_event');
     }
 
     function recordSeries() {
         record('api/dvr/autorec/create_by_series');
+    }
+
+    function stopDVR() {
+        tvheadend.AjaxConfirm({
+            url: 'api/idnode/delete',
+            params: {
+                uuid: event.dvrUuid,
+            },
+            success: function(d) {
+                win.close();
+            }
+        });
     }
 
     function record(url) {
@@ -232,7 +284,7 @@ tvheadend.epg = function() {
         dataIndex: 'actions',
         actions: [
             {
-                iconCls: 'info',
+                iconCls: 'broadcast_details',
                 qtip: 'Broadcast details',
                 cb: function(grid, rec, act, row) {
                     new tvheadend.epgDetails(grid.getStore().getAt(row).data);
@@ -250,7 +302,7 @@ tvheadend.epg = function() {
         reader: new Ext.ux.grid.livegrid.JsonReader({
             root: 'entries',
             totalProperty: 'totalCount',
-            id: 'eventId',
+            id: 'eventId'
         },
         [
             { name: 'eventId' },
@@ -276,9 +328,10 @@ tvheadend.epg = function() {
             { name: 'starRating' },
             { name: 'ageRating' },
             { name: 'genre' },
+            { name: 'dvrUuid' },
             { name: 'dvrState' },
-            { name: 'serieslinkId' },
-        ]),
+            { name: 'serieslinkId' }
+        ])
     });
 
     function setMetaAttr(meta, record, cursor) {
@@ -378,7 +431,7 @@ tvheadend.epg = function() {
                     setMetaAttr(meta, record, value && clickable);
                     return !value ? '' : (clickable ? lookup : '') + value;
                 },
-                listeners: { click: { fn: clicked } },
+                listeners: { click: { fn: clicked } }
             },
             {
                 width: 250,
@@ -434,7 +487,7 @@ tvheadend.epg = function() {
                     setMetaAttr(meta, record, value && clickable);
                     return !value ? '' : (clickable ? lookup : '') + value;
                 },
-                listeners: { click: { fn: clicked } },
+                listeners: { click: { fn: clicked } }
             },
             {
                 width: 50,
@@ -470,7 +523,7 @@ tvheadend.epg = function() {
                     if (r.length < 1) return "";
                     return (clickable ? lookup : '') + r.join(',');
                 },
-                listeners: { click: { fn: clicked } },
+                listeners: { click: { fn: clicked } }
             }
         ]
     });
@@ -718,6 +771,8 @@ tvheadend.epg = function() {
         epgFilterDuration, '-',
         {
             text: 'Reset All',
+            iconCls: 'resetIcon',
+            tooltip: 'Reset all filters (show all)',
             handler: epgQueryClear
         },
         '->',
@@ -748,7 +803,7 @@ tvheadend.epg = function() {
         cm: epgCm,
         plugins: [filter, actions],
         title: 'Electronic Program Guide',
-        iconCls: 'newspaper',
+        iconCls: 'epg',
         store: epgStore,
         selModel: new Ext.ux.grid.livegrid.RowSelectionModel(),
         view: epgView,
@@ -860,7 +915,7 @@ tvheadend.epg = function() {
         /* Really do it */
         var conf = {
           enabled: 1,
-          comment: 'Created from EPG query',
+          comment: 'Created from EPG query'
         };
         if (params.title) conf.title = params.title;
         if (params.channel) conf.channel = params.channel;

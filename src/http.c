@@ -464,6 +464,9 @@ http_access_verify_channel(http_connection_t *hc, int mask,
       return -1;
   }
 
+  if (access_verify2(hc->hc_access, mask))
+    return -1;
+
   if (channel_access(ch, hc->hc_access, hc->hc_username))
     res = 0;
   return res;
@@ -600,6 +603,39 @@ http_process_request(http_connection_t *hc, htsbuf_queue_t *spill)
   }
 }
 
+/*
+ *
+ */
+#if ENABLE_TRACE
+static void
+dump_request(http_connection_t *hc)
+{
+  char buf[2048] = "";
+  http_arg_t *ra;
+  int first;
+
+  first = 1;
+  TAILQ_FOREACH(ra, &hc->hc_req_args, link) {
+    snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), first ? "?%s=%s" : "&%s=%s", ra->key, ra->val);
+    first = 0;
+  }
+
+  first = 1;
+  TAILQ_FOREACH(ra, &hc->hc_args, link) {
+    snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), first ? "{{%s=%s" : ",%s=%s", ra->key, ra->val);
+    first = 0;
+  }
+  snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "}}");
+
+  tvhtrace("http", "%s%s", hc->hc_url, buf);
+}
+#else
+static inline void
+dump_request(http_connection_t *hc)
+{
+}
+#endif
+
 /**
  * Process a request, extract info from headers, dispatch command and
  * clean up
@@ -610,6 +646,8 @@ process_request(http_connection_t *hc, htsbuf_queue_t *spill)
   char *v, *argv[2];
   int n, rval = -1;
   uint8_t authbuf[150];
+
+  dump_request(hc);
   
   hc->hc_url_orig = tvh_strdupa(hc->hc_url);
 
@@ -713,7 +751,6 @@ http_arg_set(struct http_arg_list *list, const char *key, const char *val)
   ra->key = strdup(key);
   ra->val = strdup(val);
 }
-
 
 /*
  * Split a string in components delimited by 'delimiter'
@@ -979,8 +1016,10 @@ http_cancel( void *opaque )
 {
   http_connection_t *hc = opaque;
 
-  if (hc)
+  if (hc) {
     shutdown(hc->hc_fd, SHUT_RDWR);
+    hc->hc_shutdown = 1;
+  }
 }
 
 /**

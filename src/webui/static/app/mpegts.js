@@ -7,7 +7,7 @@ tvheadend.networks = function(panel, index)
     if (!tvheadend.network_list) {
         tvheadend.network_list = new Ext.data.JsonStore({
             url: 'api/idnode/load',
-            baseParams: {class: 'mpegts_network', enum: 1},
+            baseParams: { 'class': 'mpegts_network', 'enum': 1 },
             root: 'entries',
             fields: ['key', 'val'],
             id: 'key',
@@ -183,6 +183,7 @@ tvheadend.show_service_streams = function(data) {
 
     var win = new Ext.Window({
         title: 'Service details for ' + data.name,
+        iconCls: 'info',
         layout: 'fit',
         width: 650,
         height: 400,

@@ -73,6 +73,10 @@
     border-right: 1px solid #d0d0d0;
 }
 
+.x-tree-node-leaf .x-tree-node-icon {
+    background-image:url(../icons/tv_cards.gif);
+}
+
 .ux-mselect {
     overflow: auto;
     background: white;
@@ -152,6 +156,10 @@
 .tvh-grid-unset {
     color: #888;
     font-style: italic;
+}
+
+.find {
+    background-image: url(../icons/find.png) !important;
 }
 
 .add {
@@ -251,7 +259,7 @@
 }
 
 .control_fullscreen {
-    background-image: url(../icons/arrow_out.png) !important;
+    background-image: url(../icons/full_screen.png) !important;
 }
 
 .newspaper {
@@ -287,7 +295,7 @@
 }
 
 .scheduled {
-    background-image: url(../icons/clock.png) !important;
+    background-image: url(../icons/scheduled.png) !important;
 }
 
 .recordingError {
@@ -295,7 +303,7 @@
 }
 
 .completed {
-    background-image: url(../icons/tick.png) !important;
+    background-image: url(../icons/accept.png) !important;
 }
 
 .completedError {
@@ -452,6 +460,22 @@
 
 .resetIcon{
     background-image: url(../icons/reseticon.png) !important;
+}
+
+.dvr{
+    background-image: url(../icons/dvr.png) !important;
+}
+
+.epg{
+    background-image: url(../icons/epg.png) !important;
+}
+
+.broadcast_details{
+    background-image: url(../icons/broadcast_details.png) !important;
+}
+
+.time_schedules{
+    background-image: url(../icons/time_schedules.png) !important;
 }
 
 .x-linked {

@@ -428,7 +428,9 @@ static int _eit_process_event
 
   /* Find broadcast */
   ebc  = epg_broadcast_find_by_time(ch, start, stop, eid, 1, &save2);
-  tvhtrace("eit", "eid=%5d, start=%"PRItime_t", stop=%"PRItime_t", ebc=%p",
+  tvhtrace("eit", "svc='%s', ch='%s', eid=%5d, start=%"PRItime_t","
+                  " stop=%"PRItime_t", ebc=%p",
+           svc->s_dvb_svcname ?: "(null)", ch ? channel_get_name(ch) : "(null)",
            eid, start, stop, ebc);
   if (!ebc) return dllen + 12;
 
@@ -613,8 +615,10 @@ _eit_callback
 
   /* Get service */
   svc = mpegts_mux_find_service(mm, sid);
-  if (!svc)
+  if (!svc) {
+    tvhtrace("eit", "sid %i not found", sid);
     goto done;
+  }
 
   if (map->om_first) {
     map->om_tune_count++;
@@ -627,6 +631,9 @@ _eit_callback
 
   /* No point processing */
   if (!LIST_FIRST(&svc->s_channels))
+    goto done;
+
+  if (svc->s_dvb_ignore_eit)
     goto done;
 
   /* Process events */
