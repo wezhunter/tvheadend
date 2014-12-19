@@ -358,8 +358,8 @@ dvr_rec_start(dvr_entry_t *de, const streaming_start_t *ss)
     return -1;
   }
 
-  if(cfg->dvr_tag_files && de->de_bcast) {
-    if(muxer_write_meta(muxer, de->de_bcast)) {
+  if(cfg->dvr_tag_files) {
+    if(muxer_write_meta(muxer, de->de_bcast, de->de_comment)) {
       dvr_rec_fatal_error(de, "Unable to write meta data");
       return -1;
     }
@@ -576,10 +576,9 @@ dvr_thread(void *aux)
     case SMT_SERVICE_STATUS:
       if(sm->sm_code & TSS_PACKETS) {
 	
-      } else if(sm->sm_code & (TSS_GRACEPERIOD | TSS_ERRORS)) {
+      } else if(sm->sm_code & TSS_ERRORS) {
 
 	int code = SM_CODE_UNDEFINED_ERROR;
-
 
 	if(sm->sm_code & TSS_NO_DESCRAMBLER)
 	  code = SM_CODE_NO_DESCRAMBLER;
@@ -679,7 +678,7 @@ dvr_spawn_postproc(dvr_entry_t *de, const char *dvr_postproc)
     args[i] = s;
   }
   
-  spawnv(args[0], (void *)args);
+  spawnv(args[0], (void *)args, NULL, 1, 1);
     
   htsstr_argsplit_free(args);
 }

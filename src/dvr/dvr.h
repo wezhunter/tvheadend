@@ -154,7 +154,9 @@ typedef struct dvr_entry {
   time_t de_start_extra;
   time_t de_stop_extra;
 
+  char *de_owner;
   char *de_creator;
+  char *de_comment;
   char *de_filename;   /* Initially null if no filename has been
 			  generated yet */
   lang_str_t *de_title;      /* Title in UTF-8 (from EPG) */
@@ -172,6 +174,7 @@ typedef struct dvr_entry {
    * EPG information / links
    */
   epg_broadcast_t *de_bcast;
+  char *de_episode;
 
   /**
    * Major State
@@ -241,6 +244,7 @@ typedef struct dvr_autorec_entry {
   LIST_ENTRY(dvr_autorec_entry) dae_config_link;
 
   int dae_enabled;
+  char *dae_owner;
   char *dae_creator;
   char *dae_comment;
 
@@ -249,7 +253,8 @@ typedef struct dvr_autorec_entry {
   
   uint32_t dae_content_type;
 
-  int dae_start;  /* Minutes from midnight */
+  int dae_start;        /* Minutes from midnight */
+  int dae_start_window; /* Minutes (duration) */
 
   uint32_t dae_weekdays;
 
@@ -293,6 +298,7 @@ typedef struct dvr_timerec_entry {
   LIST_ENTRY(dvr_timerec_entry) dte_config_link;
 
   int dte_enabled;
+  char *dte_owner;
   char *dte_creator;
   char *dte_comment;
 
@@ -401,9 +407,10 @@ dvr_entry_t *
 dvr_entry_create_by_event( const char *dvr_config_uuid,
                            epg_broadcast_t *e,
                            time_t start_extra, time_t stop_extra,
-                           const char *creator,
+                           const char *owner, const char *creator,
                            dvr_autorec_entry_t *dae,
-                           dvr_prio_t pri, int retention );
+                           dvr_prio_t pri, int retention,
+                           const char *comment );
 
 dvr_entry_t *
 dvr_entry_create_htsp( const char *dvr_config_uuid,
@@ -411,8 +418,10 @@ dvr_entry_create_htsp( const char *dvr_config_uuid,
                        time_t start_extra, time_t stop_extra,
                        const char *title, const char *description,
                        const char *lang, epg_genre_t *content_type,
-                       const char *creator, dvr_autorec_entry_t *dae,
-                       dvr_prio_t pri, int retention );
+                       const char *owner, const char *creator,
+                       dvr_autorec_entry_t *dae,
+                       dvr_prio_t pri, int retention,
+                       const char *comment );
 
 dvr_entry_t *
 dvr_entry_update( dvr_entry_t *de,
@@ -470,22 +479,24 @@ dvr_entry_create_(const char *config_uuid, epg_broadcast_t *e,
                   time_t start_extra, time_t stop_extra,
                   const char *title, const char *description,
                   const char *lang, epg_genre_t *content_type,
-                  const char *creator, dvr_autorec_entry_t *dae,
-                  dvr_timerec_entry_t *tae,
-                  dvr_prio_t pri, int retention);
+                  const char *owner, const char *creator,
+                  dvr_autorec_entry_t *dae, dvr_timerec_entry_t *tae,
+                  dvr_prio_t pri, int retention, const char *comment);
 
-dvr_autorec_entry_t*
+dvr_autorec_entry_t *
 dvr_autorec_create_htsp(const char *dvr_config_name, const char *title,
-                            channel_t *ch, uint32_t aroundTime, uint32_t days,
-                            time_t start_extra, time_t stop_extra,
+                            channel_t *ch, uint32_t start, uint32_t start_window,
+                            uint32_t days, time_t start_extra, time_t stop_extra,
                             dvr_prio_t pri, int retention,
                             int min_duration, int max_duration,
-                            const char *creator, const char *comment);
+                            const char *owner, const char *creator,
+                            const char *comment);
 
 dvr_autorec_entry_t *
 dvr_autorec_add_series_link(const char *dvr_config_name,
                             epg_broadcast_t *event,
-                            const char *creator, const char *comment);
+                            const char *owner, const char *creator,
+                            const char *comment);
 
 void dvr_autorec_save(dvr_autorec_entry_t *dae);
 

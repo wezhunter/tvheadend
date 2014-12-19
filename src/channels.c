@@ -42,6 +42,7 @@
 #include "imagecache.h"
 #include "service_mapper.h"
 #include "htsbuf.h"
+#include "bouquet.h"
 #include "intlconv.h"
 
 struct channel_tree channels;
@@ -192,9 +193,12 @@ htsmsg_t *
 channel_class_get_list(void *o)
 {
   htsmsg_t *m = htsmsg_create_map();
+  htsmsg_t *p = htsmsg_create_map();
   htsmsg_add_str(m, "type",  "api");
   htsmsg_add_str(m, "uri",   "channel/list");
   htsmsg_add_str(m, "event", "channel");
+  htsmsg_add_u32(p, "all",  1);
+  htsmsg_add_msg(m, "params", p);
   return m;
 }
 
@@ -244,9 +248,11 @@ channel_class_epggrab_set ( void *o, const void *v )
   }
     
   /* Link */
-  HTSMSG_FOREACH(f, l) {
-    if ((ec = epggrab_channel_find_by_id(htsmsg_field_get_str(f))))
-      save |= epggrab_channel_link(ec, ch);
+  if (ch->ch_epgauto && l) {
+    HTSMSG_FOREACH(f, l) {
+      if ((ec = epggrab_channel_find_by_id(htsmsg_field_get_str(f))))
+        save |= epggrab_channel_link(ec, ch);
+    }
   }
 
   /* Delete */
@@ -273,6 +279,41 @@ channel_class_epggrab_list ( void *o )
   return m;
 }
 
+static void
+channel_class_epgauto_notify ( void *obj )
+{
+  channel_t *ch = obj;
+  if (!ch->ch_epgauto)
+    channel_class_epggrab_set(obj, NULL);
+}
+
+static const void *
+channel_class_bouquet_get ( void *o )
+{
+  static const char *sbuf;
+  channel_t *ch = o;
+  if (ch->ch_bouquet)
+    sbuf = idnode_uuid_as_str(&ch->ch_bouquet->bq_id);
+  else
+    sbuf = "";
+  return &sbuf;
+}
+
+static int
+channel_class_bouquet_set ( void *o, const void *v )
+{
+  channel_t *ch = o;
+  bouquet_t *bq = bouquet_find_by_uuid(v);
+  if (bq == NULL && ch->ch_bouquet) {
+    ch->ch_bouquet = NULL;
+    return 1;
+  } else if (bq != ch->ch_bouquet) {
+    ch->ch_bouquet = bq;
+    return 1;
+  }
+  return 0;
+}
+
 const idclass_t channel_class = {
   .ic_class      = "channel",
   .ic_caption    = "Channel",
@@ -281,14 +322,12 @@ const idclass_t channel_class = {
   .ic_get_title  = channel_class_get_title,
   .ic_delete     = channel_class_delete,
   .ic_properties = (const property_t[]){
-#if 0
     {
       .type     = PT_BOOL,
       .id       = "enabled",
       .name     = "Enabled",
       .off      = offsetof(channel_t, ch_enabled),
     },
-#endif
     {
       .type     = PT_STR,
       .id       = "name",
@@ -318,6 +357,13 @@ const idclass_t channel_class = {
       .name     = "Icon URL",
       .get      = channel_class_get_icon,
       .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "epgauto",
+      .name     = "Auto EPG Channel",
+      .off      = offsetof(channel_t, ch_epgauto),
+      .notify   = channel_class_epgauto_notify,
     },
     {
       .type     = PT_STR,
@@ -363,6 +409,15 @@ const idclass_t channel_class = {
       .list     = channel_tag_class_get_list,
       .rend     = channel_class_tags_rend
     },
+    {
+      .type     = PT_STR,
+      .id       = "bouquet",
+      .name     = "Bouquet (auto)",
+      .get      = channel_class_bouquet_get,
+      .set      = channel_class_bouquet_set,
+      .list     = bouquet_class_get_list,
+      .opts     = PO_RDONLY
+    },
     {}
   }
 };
@@ -380,7 +435,7 @@ channel_find_by_name ( const char *name )
   if (name == NULL)
     return NULL;
   CHANNEL_FOREACH(ch)
-    if (!strcmp(channel_get_name(ch), name))
+    if (ch->ch_enabled && !strcmp(channel_get_name(ch), name))
       break;
   return ch;
 }
@@ -420,17 +475,23 @@ channel_find_by_number ( const char *no )
  * Check if user can access the channel
  */
 int
-channel_access(channel_t *ch, access_t *a, const char *username)
+channel_access(channel_t *ch, access_t *a, int disabled)
 {
+  if (!ch)
+    return 0;
+
+  if (!disabled && !ch->ch_enabled)
+    return 0;
+
   /* Channel number check */
-  if (ch && (a->aa_chmin || a->aa_chmax)) {
-    int chnum = channel_get_number(ch);
+  if (a->aa_chmin || a->aa_chmax) {
+    int64_t chnum = channel_get_number(ch);
     if (chnum < a->aa_chmin || chnum > a->aa_chmax)
       return 0;
   }
 
   /* Channel tag check */
-  if (ch && a->aa_chtags) {
+  if (a->aa_chtags) {
     channel_tag_mapping_t *ctm;
     htsmsg_field_t *f;
     HTSMSG_FOREACH(f, a->aa_chtags) {
@@ -527,12 +588,24 @@ channel_get_name ( channel_t *ch )
 int64_t
 channel_get_number ( channel_t *ch )
 {
-  int n;
+  int64_t n = 0;
   channel_service_mapping_t *csm;
-  if (ch->ch_number) return ch->ch_number;
-  LIST_FOREACH(csm, &ch->ch_services, csm_chn_link)
-    if ((n = service_get_channel_number(csm->csm_svc)))
-      return n;
+  if (ch->ch_number) {
+    n = ch->ch_number;
+  } else {
+    LIST_FOREACH(csm, &ch->ch_services, csm_chn_link) {
+      if (ch->ch_bouquet &&
+          (n = bouquet_get_channel_number(ch->ch_bouquet, csm->csm_svc)))
+        break;
+      if ((n = service_get_channel_number(csm->csm_svc)))
+        break;
+    }
+  }
+  if (n) {
+    if (ch->ch_bouquet)
+      n += (int64_t)ch->ch_bouquet->bq_lcn_offset * CHANNEL_SPLIT;
+    return n;
+  }
   return 0;
 }
 
@@ -613,9 +686,10 @@ channel_get_icon ( channel_t *ch )
           continue;
         snprintf(buf2, sizeof(buf2), "%s/%s", picon, icn+8);
         if (i > 1 || check_file(buf2)) {
-          ch->ch_icon = strdup(icn);
+          icon = ch->ch_icon = strdup(icn);
           channel_save(ch);
           idnode_notify_simple(&ch->ch_id);
+          break;
         }
       }
     }
@@ -671,6 +745,10 @@ channel_create0
     tvherror("channel", "id collision!");
     abort();
   }
+
+  /* Defaults */
+  ch->ch_enabled = 1;
+  ch->ch_epgauto = 1;
 
   if (conf) {
     ch->ch_load = 1;
@@ -867,6 +945,30 @@ channel_tag_mapping_destroy(channel_tag_mapping_t *ctm, int flags)
   }
 }
 
+/**
+ *
+ */
+void
+channel_tag_unmap(channel_t *ch, channel_tag_t *ct)
+{
+  channel_tag_mapping_t *ctm, *n;
+
+  for (ctm = LIST_FIRST(&ch->ch_ctms); ctm != NULL; ctm = n) {
+    n = LIST_NEXT(ctm, ctm_channel_link);
+    if (ctm->ctm_channel == ch) {
+      LIST_REMOVE(ctm, ctm_channel_link);
+      LIST_REMOVE(ctm, ctm_tag_link);
+      free(ctm);
+      channel_save(ch);
+      idnode_notify_simple(&ch->ch_id);
+      if (ct->ct_enabled && !ct->ct_internal) {
+        htsp_tag_update(ct);
+        htsp_channel_update(ch);
+      }
+      return;
+    }
+  }
+}
 
 /**
  *
@@ -926,6 +1028,7 @@ channel_tag_destroy(channel_tag_t *ct, int delconf)
   TAILQ_REMOVE(&channel_tags, ct, ct_link);
   idnode_unlink(&ct->ct_id);
 
+  bouquet_destroy_by_channel_tag(ct);
   autorec_destroy_by_channel_tag(ct, delconf);
   access_destroy_by_channel_tag(ct, delconf);
 
@@ -945,6 +1048,7 @@ channel_tag_save(channel_tag_t *ct)
   idnode_save(&ct->ct_id, c);
   hts_settings_save(c, "channel/tag/%s", idnode_uuid_as_str(&ct->ct_id));
   htsmsg_destroy(c);
+  htsp_tag_update(ct);
 }
 
 
@@ -964,6 +1068,35 @@ channel_tag_get_icon(channel_tag_t *ct)
     return buf;
   }
   return icon;
+}
+
+/**
+ * Check if user can access the channel tag
+ */
+int
+channel_tag_access(channel_tag_t *ct, access_t *a, int disabled)
+{
+  if (!ct)
+    return 0;
+
+  if (!disabled && (!ct->ct_enabled || ct->ct_internal))
+    return 0;
+
+  if (!ct->ct_private)
+    return 1;
+
+  /* Channel tag check */
+  if (a->aa_chtags) {
+    htsmsg_field_t *f;
+    const char *uuid = idnode_uuid_as_str(&ct->ct_id);
+    HTSMSG_FOREACH(f, a->aa_chtags)
+      if (!strcmp(htsmsg_field_get_str(f) ?: "", uuid))
+        goto chtags_ok;
+    return 0;
+  }
+chtags_ok:
+
+  return 1;
 }
 
 /* **************************************************************************
@@ -1008,9 +1141,12 @@ htsmsg_t *
 channel_tag_class_get_list(void *o)
 {
   htsmsg_t *m = htsmsg_create_map();
+  htsmsg_t *p = htsmsg_create_map();
   htsmsg_add_str(m, "type",  "api");
   htsmsg_add_str(m, "uri",   "channeltag/list");
   htsmsg_add_str(m, "event", "channeltag");
+  htsmsg_add_u32(p, "all",  1);
+  htsmsg_add_msg(m, "params", p);
   return m;
 }
 
@@ -1029,6 +1165,12 @@ const idclass_t channel_tag_class = {
       .off      = offsetof(channel_tag_t, ct_enabled),
     },
     {
+      .type     = PT_U32,
+      .id       = "index",
+      .name     = "Sort Index",
+      .off      = offsetof(channel_tag_t, ct_index),
+    },
+    {
       .type     = PT_STR,
       .id       = "name",
       .name     = "Name",
@@ -1039,6 +1181,12 @@ const idclass_t channel_tag_class = {
       .id       = "internal",
       .name     = "Internal",
       .off      = offsetof(channel_tag_t, ct_internal),
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "private",
+      .name     = "Private",
+      .off      = offsetof(channel_tag_t, ct_private),
     },
     {
       .type     = PT_STR,

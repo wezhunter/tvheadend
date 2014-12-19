@@ -420,7 +420,7 @@ typedef enum {
 #define SM_CODE_BAD_SIGNAL                205
 #define SM_CODE_NO_SOURCE                 206
 #define SM_CODE_NO_SERVICE                207
-#define SM_CODE_NO_VALID_ADAPTER          308
+#define SM_CODE_NO_VALID_ADAPTER          208
 
 #define SM_CODE_ABORTED                   300
 
@@ -619,6 +619,8 @@ int tvh_pipe(int flags, th_pipe_t *pipe);
 void tvh_pipe_close(th_pipe_t *pipe);
 
 int tvh_write(int fd, const void *buf, size_t len);
+
+FILE *tvh_fopen(const char *filename, const char *mode);
 
 void hexdump(const char *pfx, const uint8_t *data, int len);
 

@@ -30,7 +30,7 @@ static int
 iptv_mux_url_set ( void *p, const void *v )
 {
   iptv_mux_t *im = p;
-  const char *str = v;
+  const char *str = v, *x;
   char *buf, port[16] = "";
   size_t len;
   url_t url;
@@ -41,6 +41,17 @@ iptv_mux_url_set ( void *p, const void *v )
       free(im->mm_iptv_url_sane);
       im->mm_iptv_url = NULL;
       im->mm_iptv_url_sane = NULL;
+      return 1;
+    }
+    if (!strncmp(str, "pipe://", 7)) {
+      x = str + strlen(str);
+      while (x != str && *x <= ' ')
+        x--;
+      ((char *)x)[1] = '\0';
+      free(im->mm_iptv_url);
+      free(im->mm_iptv_url_sane);
+      im->mm_iptv_url = strdup(str);
+      im->mm_iptv_url_sane = strdup(str);
       return 1;
     }
     memset(&url, 0, sizeof(url));
@@ -127,6 +138,20 @@ const idclass_t iptv_mux_class =
       .name     = "Service Name",
       .off      = offsetof(iptv_mux_t, mm_iptv_svcname),
     },
+    {
+      .type     = PT_BOOL,
+      .id       = "iptv_respawn",
+      .name     = "Respawn (pipe)",
+      .off      = offsetof(iptv_mux_t, mm_iptv_respawn),
+      .opts     = PO_ADVANCED,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "iptv_env",
+      .name     = "Environment (pipe)",
+      .off      = offsetof(iptv_mux_t, mm_iptv_env),
+      .opts     = PO_ADVANCED,
+    },
     {}
   }
 };
@@ -158,6 +183,7 @@ iptv_mux_delete ( mpegts_mux_t *mm, int delconf )
   muxname = im->mm_iptv_muxname;
   free(im->mm_iptv_interface);
   free(im->mm_iptv_svcname);
+  free(im->mm_iptv_env);
   mpegts_mux_delete(mm, delconf);
   free(url);
   free(url_sane);

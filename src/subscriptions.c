@@ -100,6 +100,7 @@ subscription_link_service(th_subscription_t *s, service_t *t)
     // Send a START message to the subscription client
     streaming_target_deliver(s->ths_output, s->ths_start_message);
     s->ths_start_message = NULL;
+    t->s_running = 1;
 
     // Send status report
     sm = streaming_msg_create_code(SMT_SERVICE_STATUS, 
@@ -128,12 +129,11 @@ subscription_unlink_service0(th_subscription_t *s, int reason, int stop)
 
   streaming_target_disconnect(&t->s_streaming_pad, &s->ths_input);
 
-  if(stop &&
-     TAILQ_FIRST(&t->s_filt_components) != NULL && 
-     s->ths_state == SUBSCRIPTION_GOT_SERVICE) {
+  if(stop && t->s_running) {
     // Send a STOP message to the subscription client
     sm = streaming_msg_create_code(SMT_STOP, reason);
     streaming_target_deliver(s->ths_output, sm);
+    t->s_running = 0;
   }
 
   pthread_mutex_unlock(&t->s_stream_mutex);
@@ -198,7 +198,7 @@ subscription_show_none(th_subscription_t *s)
 {
   channel_t *ch = s->ths_channel;
   tvhlog(LOG_NOTICE, "subscription",
-	 "%04X: No transponder available for subscription \"%s\" "
+	 "%04X: No input source available for subscription \"%s\" "
 	 "to channel \"%s\"",
 	   shortid(s), s->ths_title, ch ? channel_get_name(ch) : "none");
 }
@@ -464,7 +464,7 @@ subscription_input(void *opauqe, streaming_message_t *sm)
     }
 
     if(sm->sm_type == SMT_SERVICE_STATUS &&
-       sm->sm_code & (TSS_GRACEPERIOD | TSS_ERRORS)) {
+       sm->sm_code & TSS_ERRORS) {
       // No, mark our subscription as bad_service
       // the scheduler will take care of things
       error = tss2errcode(sm->sm_code);
@@ -480,6 +480,8 @@ subscription_input(void *opauqe, streaming_message_t *sm)
       if(s->ths_start_message != NULL) {
         streaming_target_deliver(s->ths_output, s->ths_start_message);
         s->ths_start_message = NULL;
+        if (s->ths_service)
+          s->ths_service->s_running = 1;
       }
       s->ths_state = SUBSCRIPTION_GOT_SERVICE;
     }
@@ -491,7 +493,7 @@ subscription_input(void *opauqe, streaming_message_t *sm)
   }
 
   if (sm->sm_type == SMT_SERVICE_STATUS &&
-      sm->sm_code & TSS_TIMEOUT) {
+      sm->sm_code & (TSS_TUNING|TSS_TIMEOUT)) {
     error = tss2errcode(sm->sm_code);
     if (error > s->ths_testing_error)
       s->ths_testing_error = error;
@@ -559,6 +561,7 @@ subscription_unsubscribe(th_subscription_t *s)
   free(s->ths_hostname);
   free(s->ths_username);
   free(s->ths_client);
+  free(s->ths_dvrfile);
   free(s);
 
   gtimer_arm(&subscription_reschedule_timer, 
@@ -602,7 +605,7 @@ subscription_create
 
   streaming_target_init(&s->ths_input, cb, s, reject);
 
-  s->ths_prch              = prch->prch_st ? prch : NULL;
+  s->ths_prch              = prch && prch->prch_st ? prch : NULL;
   s->ths_weight            = weight;
   s->ths_title             = strdup(name);
   s->ths_hostname          = hostname ? strdup(hostname) : NULL;
@@ -647,13 +650,11 @@ subscription_create_from_channel_or_service(profile_chain_t *prch,
   th_subscription_t *s;
   channel_t *ch = NULL;
   service_t *t  = NULL;
-  const char *pro_name;
 
   assert(prch);
   assert(prch->prch_id);
   assert(prch->prch_st);
 
-  pro_name = prch->prch_pro ? (prch->prch_pro->pro_name ?: "") : "<none>";
 
   if (service)
     t  = prch->prch_id;
@@ -662,12 +663,15 @@ subscription_create_from_channel_or_service(profile_chain_t *prch,
 
   s = subscription_create(prch, weight, name, flags, subscription_input,
                           hostname, username, client);
+#if ENABLE_TRACE
+  const char *pro_name = prch->prch_pro ? (prch->prch_pro->pro_name ?: "") : "<none>";
   if (ch)
     tvhtrace("subscription", "%04X: creating subscription for %s weight %d using profile %s",
              shortid(s), channel_get_name(ch), weight, pro_name);
   else
     tvhtrace("subscription", "%04X: creating subscription for service %s weight %d sing profile %s",
              shortid(s), t->s_nicename, weight, pro_name);
+#endif
   s->ths_channel = ch;
   s->ths_service = t;
   if (ch)
@@ -784,13 +788,10 @@ subscription_create_from_mux(profile_chain_t *prch,
   mi = s->ths_mmi->mmi_input;
   assert(mi);
 
-  if (s->ths_flags & SUBSCRIPTION_FULLMUX) {
-    pthread_mutex_lock(&mi->mi_output_lock);
-    mi->mi_open_pid(mi, mm, MPEGTS_FULLMUX_PID, MPS_NONE, s);
-    pthread_mutex_unlock(&mi->mi_output_lock);
-  }
-
   pthread_mutex_lock(&mi->mi_output_lock);
+
+  if (s->ths_flags & SUBSCRIPTION_FULLMUX)
+    mi->mi_open_pid(mi, mm, MPEGTS_FULLMUX_PID, MPS_NONE, s);
 
   /* Store */
   LIST_INSERT_HEAD(&mm->mm_active->mmi_subs, s, ths_mmi_link);
@@ -893,6 +894,9 @@ subscription_create_msg(th_subscription_t *s)
   
   if(s->ths_service != NULL)
     htsmsg_add_str(m, "service", s->ths_service->s_nicename ?: "");
+
+  else if(s->ths_dvrfile != NULL)
+    htsmsg_add_str(m, "service", s->ths_dvrfile ?: "");
 
   else if (s->ths_mmi != NULL && s->ths_mmi->mmi_mux != NULL) {
     char buf[512];

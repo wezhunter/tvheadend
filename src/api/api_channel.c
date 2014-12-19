@@ -17,13 +17,29 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __TVH_API_SERVICE_H__
-#define __TVH_API_SERVICE_H__
+#ifndef __TVH_API_CHANNEL_H__
+#define __TVH_API_CHANNEL_H__
 
 #include "tvheadend.h"
 #include "channels.h"
 #include "access.h"
 #include "api.h"
+
+static void
+api_channel_key_val(htsmsg_t *dst, const char *key, const char *val)
+{
+  htsmsg_t *e = htsmsg_create_map();
+  htsmsg_add_str(e, "key", key);
+  htsmsg_add_str(e, "val", val ?: "");
+  htsmsg_add_msg(dst, NULL, e);
+}
+
+static int
+api_channel_is_all(access_t *perm, htsmsg_t *args)
+{
+  return htsmsg_get_bool_or_default(args, "all", 0) &&
+         !access_verify2(perm, ACCESS_ADMIN);
+}
 
 // TODO: this will need converting to an idnode system
 static int
@@ -31,15 +47,14 @@ api_channel_list
   ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
 {
   channel_t *ch;
-  htsmsg_t *l, *e;
+  htsmsg_t *l;
+  int cfg = api_channel_is_all(perm, args);
 
   l = htsmsg_create_list();
   pthread_mutex_lock(&global_lock);
   CHANNEL_FOREACH(ch) {
-    e = htsmsg_create_map();
-    htsmsg_add_str(e, "key", idnode_uuid_as_str(&ch->ch_id));
-    htsmsg_add_str(e, "val", channel_get_name(ch));
-    htsmsg_add_msg(l, NULL, e);
+    if (!cfg && !channel_access(ch, perm, 0)) continue;
+    api_channel_key_val(l, idnode_uuid_as_str(&ch->ch_id), channel_get_name(ch));
   }
   pthread_mutex_unlock(&global_lock);
   *resp = htsmsg_create_map();
@@ -50,12 +65,14 @@ api_channel_list
 
 static void
 api_channel_grid
-  ( access_t *perm, idnode_set_t *ins, api_idnode_grid_conf_t *conf )
+  ( access_t *perm, idnode_set_t *ins, api_idnode_grid_conf_t *conf, htsmsg_t *args )
 {
   channel_t *ch;
+  int cfg = api_channel_is_all(perm, args);
 
   CHANNEL_FOREACH(ch)
-    idnode_set_add(ins, (idnode_t*)ch, &conf->filter);
+    if (cfg || channel_access(ch, perm, 0))
+      idnode_set_add(ins, (idnode_t*)ch, &conf->filter);
 }
 
 static int
@@ -82,15 +99,13 @@ api_channel_tag_list
   ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
 {
   channel_tag_t *ct;
-  htsmsg_t *l, *e;
-  
+  htsmsg_t *l;
+  int cfg = api_channel_is_all(perm, args);
+
   l = htsmsg_create_list();
-  TAILQ_FOREACH(ct, &channel_tags, ct_link) {
-    e = htsmsg_create_map();
-    htsmsg_add_str(e, "key", idnode_uuid_as_str(&ct->ct_id));
-    htsmsg_add_str(e, "val", ct->ct_name);
-    htsmsg_add_msg(l, NULL, e);
-  }
+  TAILQ_FOREACH(ct, &channel_tags, ct_link)
+    if (cfg || channel_tag_access(ct, perm, 0))
+      api_channel_key_val(l, idnode_uuid_as_str(&ct->ct_id), ct->ct_name);
   *resp = htsmsg_create_map();
   htsmsg_add_msg(*resp, "entries", l);
   return 0;
@@ -98,12 +113,14 @@ api_channel_tag_list
 
 static void
 api_channel_tag_grid
-  ( access_t *perm, idnode_set_t *ins, api_idnode_grid_conf_t *conf )
+  ( access_t *perm, idnode_set_t *ins, api_idnode_grid_conf_t *conf, htsmsg_t *args )
 {
   channel_tag_t *ct;
+  int cfg = api_channel_is_all(perm, args);
 
   TAILQ_FOREACH(ct, &channel_tags, ct_link)
-    idnode_set_add(ins, (idnode_t*)ct, &conf->filter);
+    if (cfg || channel_tag_access(ct, perm, 0))
+      idnode_set_add(ins, (idnode_t*)ct, &conf->filter);
 }
 
 static int
@@ -145,4 +162,4 @@ void api_channel_init ( void )
 }
 
 
-#endif /* __TVH_API_IDNODE_H__ */
+#endif /* __TVH_API_CHANNEL_H__ */

@@ -112,7 +112,7 @@ static idnode_set_t *
 satip_device_class_get_childs ( idnode_t *in )
 {
   satip_device_t *sd = (satip_device_t *)in;
-  idnode_set_t *is = idnode_set_create();
+  idnode_set_t *is = idnode_set_create(0);
   satip_frontend_t *lfe;
 
   TAILQ_FOREACH(lfe, &sd->sd_frontends, sf_link)
@@ -179,6 +179,13 @@ const idclass_t satip_device_class =
       .name     = "PIDs in setup",
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_pids0),
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "shutdown2",
+      .name     = "Double RTSP Shutdown",
+      .opts     = PO_ADVANCED,
+      .off      = offsetof(satip_device_t, sd_shutdown2),
     },
     {
       .type     = PT_BOOL,

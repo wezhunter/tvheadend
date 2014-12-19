@@ -46,12 +46,22 @@
 #include "input.h"
 #include "access.h"
 #include "esfilter.h"
+#include "bouquet.h"
 
 static void service_data_timeout(void *aux);
 static void service_class_delete(struct idnode *self);
 static void service_class_save(struct idnode *self);
 
 struct service_queue service_all;
+
+static void
+service_class_notify_enabled ( void *obj )
+{
+  service_t *t = (service_t *)obj;
+  if (t->s_enabled && t->s_auto != SERVICE_AUTO_OFF)
+    t->s_auto = SERVICE_AUTO_NORMAL;
+  bouquet_notify_service_enabled(t);
+}
 
 static const void *
 service_class_channel_get ( void *obj )
@@ -167,6 +177,17 @@ service_class_caid_get ( void *obj )
   return &s;
 }
 
+static htsmsg_t *
+service_class_auto_list ( void *o )
+{
+  static const struct strtab tab[] = {
+    { "",                   0 },
+    { "No Auto (Disabled)", 1 },
+    { "Missing In PAT",     2 }
+  };
+  return strtab2htsmsg(tab);
+}
+
 const idclass_t service_class = {
   .ic_class      = "service",
   .ic_caption    = "Service",
@@ -181,6 +202,14 @@ const idclass_t service_class = {
       .id       = "enabled",
       .name     = "Enabled",
       .off      = offsetof(service_t, s_enabled),
+      .notify   = service_class_notify_enabled,
+    },
+    {
+      .type     = PT_INT,
+      .id       = "auto",
+      .name     = "Automatic Checking",
+      .list     = service_class_auto_list,
+      .off      = offsetof(service_t, s_auto),
     },
     {
       .type     = PT_STR,
@@ -799,6 +828,8 @@ service_destroy(service_t *t, int delconf)
 
   t->s_status = SERVICE_ZOMBIE;
 
+  bouquet_destroy_by_service(t);
+
   TAILQ_INIT(&t->s_filt_components);
   while((st = TAILQ_FIRST(&t->s_components)) != NULL)
     service_stream_destroy(t, st);
@@ -808,6 +839,18 @@ service_destroy(service_t *t, int delconf)
   TAILQ_REMOVE(&service_all, t, s_all_link);
 
   service_unref(t);
+}
+
+void
+service_set_enabled(service_t *t, int enabled, int _auto)
+{
+  if (t->s_enabled != !!enabled) {
+    t->s_enabled = !!enabled;
+    t->s_auto = _auto;
+    service_class_notify_enabled(t);
+    service_request_save(t, 0);
+    idnode_notify_simple(&t->s_id);
+  }
 }
 
 static int64_t
@@ -1125,7 +1168,7 @@ service_set_streaming_status_flags_(service_t *t, int set)
 
   t->s_streaming_status = set;
 
-  tvhlog(LOG_DEBUG, "service", "%s: Status changed to %s%s%s%s%s%s%s%s",
+  tvhlog(LOG_DEBUG, "service", "%s: Status changed to %s%s%s%s%s%s%s%s%s",
 	 service_nicename(t),
 	 set & TSS_INPUT_HARDWARE ? "[Hardware input] " : "",
 	 set & TSS_INPUT_SERVICE  ? "[Input on service] " : "",
@@ -1133,6 +1176,7 @@ service_set_streaming_status_flags_(service_t *t, int set)
 	 set & TSS_PACKETS        ? "[Reassembled packets] " : "",
 	 set & TSS_NO_DESCRAMBLER ? "[No available descrambler] " : "",
 	 set & TSS_NO_ACCESS      ? "[No access] " : "",
+	 set & TSS_TUNING         ? "[Tuning failed] " : "",
 	 set & TSS_GRACEPERIOD    ? "[Graceperiod expired] " : "",
 	 set & TSS_TIMEOUT        ? "[Data timeout] " : "");
 
@@ -1150,26 +1194,32 @@ service_set_streaming_status_flags_(service_t *t, int set)
  * (i.e. an AC3 stream disappears, etc)
  */
 void
-service_restart(service_t *t, int had_components)
+service_restart(service_t *t)
 {
+  int had_components;
+
   pthread_mutex_lock(&t->s_stream_mutex);
 
-  if(had_components) {
-    streaming_pad_deliver(&t->s_streaming_pad,
-                          streaming_msg_create_code(SMT_STOP,
-                                                    SM_CODE_SOURCE_RECONFIGURED));
-  }
+  had_components = TAILQ_FIRST(&t->s_filt_components) != NULL &&
+                   t->s_running;
 
   service_build_filter(t);
 
   if(TAILQ_FIRST(&t->s_filt_components) != NULL) {
+    if (had_components)
+      streaming_pad_deliver(&t->s_streaming_pad,
+                            streaming_msg_create_code(SMT_STOP,
+                                                      SM_CODE_SOURCE_RECONFIGURED));
+      
     streaming_pad_deliver(&t->s_streaming_pad,
                           streaming_msg_create_data(SMT_START,
                                                     service_build_stream_start(t)));
+    t->s_running = 1;
   } else {
     streaming_pad_deliver(&t->s_streaming_pad,
                           streaming_msg_create_code(SMT_STOP,
                                                     SM_CODE_NO_SERVICE));
+    t->s_running = 0;
   }
 
   pthread_mutex_unlock(&t->s_stream_mutex);
@@ -1252,7 +1302,7 @@ service_request_save(service_t *t, int restart)
     TAILQ_INSERT_TAIL(&pending_save_queue, t, s_ps_link);
     service_ref(t);
     pthread_cond_signal(&pending_save_cond);
-  } else if(restart) {
+  } else if (restart) {
     t->s_ps_onqueue = 2; // upgrade to restart too
   }
 
@@ -1288,6 +1338,7 @@ service_saver(void *aux)
 {
   service_t *t;
   int restart;
+
   pthread_mutex_lock(&pending_save_mutex);
 
   while(tvheadend_running) {
@@ -1307,9 +1358,8 @@ service_saver(void *aux)
 
     if(t->s_status != SERVICE_ZOMBIE)
       t->s_config_save(t);
-    if(t->s_status == SERVICE_RUNNING && restart) {
-      service_restart(t, 1);
-    }
+    if(t->s_status == SERVICE_RUNNING && restart)
+      service_restart(t);
     service_unref(t);
 
     pthread_mutex_unlock(&global_lock);
@@ -1399,6 +1449,9 @@ service_tss2text(int flags)
   if(flags & TSS_NO_ACCESS)
     return "No access";
 
+  if(flags & TSS_TUNING)
+    return "Tuning failed";
+
   if(flags & TSS_NO_DESCRAMBLER)
     return "No descrambler";
 
@@ -1432,6 +1485,9 @@ tss2errcode(int tss)
 {
   if(tss & TSS_NO_ACCESS)
     return SM_CODE_NO_ACCESS;
+
+  if(tss & TSS_TUNING)
+    return SM_CODE_TUNING_FAILED;
 
   if(tss & TSS_NO_DESCRAMBLER)
     return SM_CODE_NO_DESCRAMBLER;
@@ -1499,6 +1555,7 @@ service_instance_add(service_instance_list_t *sil,
   si->si_weight = weight;
   si->si_prio   = prio;
   strncpy(si->si_source, source ?: "<unknown>", sizeof(si->si_source));
+  si->si_source[sizeof(si->si_source)-1] = '\0';
   TAILQ_INSERT_SORTED(sil, si, si_link, si_cmp);
   return si;
 }
@@ -1546,7 +1603,7 @@ service_get_channel_name ( service_t *s )
 const char *
 service_get_full_channel_name ( service_t *s )
 {
-  static char __thread buf[256];
+  static char buf[256];
   const char *r = NULL;
   int         len;
 
@@ -1563,7 +1620,7 @@ service_get_full_channel_name ( service_t *s )
     buf[len++] = '/';
   buf[len] = '\0';
   if (len < sizeof(buf))
-    snprintf(buf + len, sizeof(buf) - len, "%s", r);
+    snprintf(buf + len, sizeof(buf) - len, "%s%s", !s->s_enabled ? "---" : "", r);
   return buf;
 }
 
@@ -1610,6 +1667,15 @@ service_get_encryption(service_t *t)
     }
   }
   return 0;
+}
+
+/*
+ *
+ */
+void
+service_mapped(service_t *s)
+{
+  if (s->s_mapped) s->s_mapped(s);
 }
 
 /*

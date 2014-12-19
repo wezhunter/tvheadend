@@ -40,7 +40,7 @@ typedef struct iptv_handler iptv_handler_t;
 struct iptv_handler
 {
   const char *scheme;
-  int     (*start) ( iptv_mux_t *im, const url_t *url );
+  int     (*start) ( iptv_mux_t *im, const char *raw, const url_t *url );
   void    (*stop)  ( iptv_mux_t *im );
   ssize_t (*read)  ( iptv_mux_t *im );
   
@@ -54,6 +54,7 @@ struct iptv_input
   mpegts_input_t;
 };
 
+int  iptv_input_fd_started ( iptv_mux_t *im );
 void iptv_input_mux_started ( iptv_mux_t *im );
 void iptv_input_recv_packets ( iptv_mux_t *im, ssize_t len );
 
@@ -91,6 +92,10 @@ struct iptv_mux
   char                 *mm_iptv_muxname;
   char                 *mm_iptv_svcname;
 
+  int                   mm_iptv_respawn;
+  time_t                mm_iptv_respawn_last;
+  char                 *mm_iptv_env;
+
   sbuf_t                mm_iptv_buffer;
 
   iptv_handler_t       *im_handler;
@@ -118,6 +123,7 @@ void iptv_mux_load_all ( void );
 
 void iptv_http_init    ( void );
 void iptv_udp_init     ( void );
+void iptv_pipe_init     ( void );
 
 #endif /* __IPTV_PRIVATE_H__ */
 

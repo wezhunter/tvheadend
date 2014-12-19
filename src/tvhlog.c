@@ -102,11 +102,12 @@ tvhlog_set_subsys ( htsmsg_t **c, const char *subsys )
   while ( t ) {
     subsys = NULL;
     a      = 1;
-    if (!*t) goto next;
-    if (t[0] == '+' || t[0] == '-') {
-      a = t[0] == '+';
+    while (*t && (*t == '+' || *t == '-' || *t <= ' ')) {
+      if (*t > ' ')
+        a = *t == '+';
       t++;
     }
+    if (!*t) goto next;
     if (!strcmp(t, "all")) {
       if (*c)
         htsmsg_destroy(*c);
@@ -202,7 +203,7 @@ tvhlog_process
     if (options & TVHLOG_OPT_DBG_FILE || msg->severity < LOG_DEBUG) {
       const char *ltxt = logtxtmeta[msg->severity][0];
       if (!*fp)
-        *fp = fopen(path, "a");
+        *fp = tvh_fopen(path, "a");
       if (*fp)
         fprintf(*fp, "%s [%7s]:%s\n", t, ltxt, msg->msg);
     }

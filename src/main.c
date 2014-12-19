@@ -69,6 +69,7 @@
 #include "libav.h"
 #endif
 #include "profile.h"
+#include "bouquet.h"
 
 #ifdef PLATFORM_LINUX
 #include <sys/prctl.h>
@@ -131,6 +132,7 @@ int              tvheadend_webui_port;
 int              tvheadend_webui_debug;
 int              tvheadend_htsp_port;
 int              tvheadend_htsp_port_extra;
+const char      *tvheadend_tsdebug;
 const char      *tvheadend_cwd;
 const char      *tvheadend_webroot;
 const tvh_caps_t tvheadend_capabilities[] = {
@@ -374,8 +376,6 @@ mainloop(void)
     if (ts.tv_sec > dispatch_clock) {
       dispatch_clock = ts.tv_sec;
 
-      spawn_reaper(); /* reap spawned processes */
-
       comet_flush(); /* Flush idle comet mailboxes */
     }
 
@@ -440,6 +440,7 @@ main(int argc, char **argv)
   const char *log_debug = NULL, *log_trace = NULL;
   char buf[512];
   FILE *pidfile = NULL;
+  extern int dvb_bouquets_parse;
 
   main_tid = pthread_self();
 
@@ -469,12 +470,15 @@ main(int argc, char **argv)
               opt_fileline     = 0,
               opt_threadid     = 0,
               opt_ipv6         = 0,
+#if ENABLE_TSFILE
               opt_tsfile_tuner = 0,
+#endif
               opt_dump         = 0,
               opt_xspf         = 0,
               opt_dbus         = 0,
               opt_dbus_session = 0,
-              opt_nobackup     = 0;
+              opt_nobackup     = 0,
+              opt_nobat        = 0;
   const char *opt_config       = NULL,
              *opt_user         = NULL,
              *opt_group        = NULL,
@@ -553,13 +557,22 @@ main(int argc, char **argv)
     { 'D', "dump",      "Enable coredumps for daemon", OPT_BOOL, &opt_dump },
     {   0, "noacl",     "Disable all access control checks",
       OPT_BOOL, &opt_noacl },
+    {   0, "nobat",     "Disable DVB bouquets",
+      OPT_BOOL, &opt_nobat },
     { 'j', "join",      "Subscribe to a service permanently",
       OPT_STR, &opt_subscribe },
 
 
+#if ENABLE_TSFILE || ENABLE_TSDEBUG
     { 0, NULL, "TODO: testing", OPT_BOOL, NULL },
+#if ENABLE_TSFILE
     { 0, "tsfile_tuners", "Number of tsfile tuners", OPT_INT, &opt_tsfile_tuner },
     { 0, "tsfile", "tsfile input (mux file)", OPT_STR_LIST, &opt_tsfile },
+#endif
+#if ENABLE_TSDEBUG
+    { 0, "tsdebug", "Output directory for tsdebug", OPT_STR, &tvheadend_tsdebug },
+#endif
+#endif
 
   };
 
@@ -607,6 +620,8 @@ main(int argc, char **argv)
   }
 
   /* Additional cmdline processing */
+  if (opt_nobat)
+    dvb_bouquets_parse = 0;
 #if ENABLE_LINUXDVB
   if (!opt_dvb_adapters) {
     adapter_mask = ~0;
@@ -686,7 +701,7 @@ main(int argc, char **argv)
   htsp_init(opt_bindaddr);	   // bind to ports only
 
   if (opt_fork)
-    pidfile = fopen(opt_pidpath, "w+");
+    pidfile = tvh_fopen(opt_pidpath, "w+");
 
   /* Set priviledges */
   if(opt_fork || opt_group || opt_user) {
@@ -788,6 +803,7 @@ main(int argc, char **argv)
   /* Initialise configuration */
   uuid_init();
   idnode_init();
+  spawn_init();
   config_init(opt_config, opt_nobackup == 0);
 
   /**
@@ -813,13 +829,19 @@ main(int argc, char **argv)
   http_client_init(opt_user_agent);
   esfilter_init();
 
+  bouquet_init();
+
   service_init();
+
+  dvb_init();
 
 #if ENABLE_MPEGTS
   mpegts_init(adapter_mask, &opt_satip_xml, &opt_tsfile, opt_tsfile_tuner);
 #endif
 
   channel_init();
+
+  bouquet_service_resolve();
 
   subscription_init();
 
@@ -917,6 +939,7 @@ main(int argc, char **argv)
   tvhftrace("main", service_mapper_done);
   tvhftrace("main", service_done);
   tvhftrace("main", channel_done);
+  tvhftrace("main", bouquet_done);
   tvhftrace("main", dvr_done);
   tvhftrace("main", subscription_done);
   tvhftrace("main", access_done);
@@ -926,7 +949,6 @@ main(int argc, char **argv)
   tvhftrace("main", imagecache_done);
   tvhftrace("main", lang_code_done);
   tvhftrace("main", api_done);
-  tvhftrace("main", config_done);
   tvhftrace("main", hts_settings_done);
   tvhftrace("main", dvb_done);
   tvhftrace("main", lang_str_done);
@@ -935,14 +957,19 @@ main(int argc, char **argv)
   tvhftrace("main", intlconv_done);
   tvhftrace("main", urlparse_done);
   tvhftrace("main", idnode_done);
+  tvhftrace("main", spawn_done);
 
   tvhlog(LOG_NOTICE, "STOP", "Exiting HTS Tvheadend");
   tvhlog_end();
 
+  tvhftrace("main", config_done);
+
   if(opt_fork)
     unlink(opt_pidpath);
     
+#if ENABLE_TSFILE
   free(opt_tsfile.str);
+#endif
   free(opt_satip_xml.str);
 
   /* OpenSSL - welcome to the "cleanup" hell */
@@ -951,12 +978,14 @@ main(int argc, char **argv)
   CRYPTO_cleanup_all_ex_data();
   EVP_cleanup();
   CONF_modules_free();
+#ifndef OPENSSL_NO_COMP
   COMP_zlib_cleanup();
+#endif
   ERR_remove_state(0);
   ERR_free_strings();
-  {
-    sk_SSL_COMP_free(SSL_COMP_get_compression_methods());
-  }
+#ifndef OPENSSL_NO_COMP
+  sk_SSL_COMP_free(SSL_COMP_get_compression_methods());
+#endif
   /* end of OpenSSL cleanup code */
 
 #if ENABLE_DBUS_1

@@ -82,7 +82,7 @@ satip_satconf_class_network_set( void *o, const void *p )
   satip_satconf_t *sfc  = o;
   const htsmsg_t *msg = p;
   mpegts_network_t *mn;
-  idnode_set_t *n = idnode_set_create();
+  idnode_set_t *n = idnode_set_create(0);
   htsmsg_field_t *f;
   const char *str;
   int i, save;
@@ -238,7 +238,7 @@ satip_satconf_create0
     free(sfc);
     return NULL;
   }
-  sfc->sfc_networks = idnode_set_create();
+  sfc->sfc_networks = idnode_set_create(0);
   sfc->sfc_lfe      = lfe;
   sfc->sfc_position = position + 1;
   TAILQ_INSERT_TAIL(&lfe->sf_satconf, sfc, sfc_link);
@@ -256,7 +256,7 @@ satip_satconf_create0
 
 void
 satip_satconf_create
-  ( satip_frontend_t *lfe, htsmsg_t *conf )
+  ( satip_frontend_t *lfe, htsmsg_t *conf, int def_positions )
 {
   htsmsg_t *l, *e;
   htsmsg_field_t *f;
@@ -272,7 +272,7 @@ satip_satconf_create
   }
 
   if (lfe->sf_positions == 0)
-    for ( ; lfe->sf_positions < 4; lfe->sf_positions++)
+    for ( ; lfe->sf_positions < def_positions; lfe->sf_positions++)
       satip_satconf_create0(lfe, NULL, lfe->sf_positions);
 }
 

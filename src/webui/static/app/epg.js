@@ -89,6 +89,10 @@ tvheadend.durationLookupRange = function(value) {
 tvheadend.epgDetails = function(event) {
 
     var content = '';
+    var duration = 0;
+
+    if (event.start && event.stop && event.stop - event.start > 0)
+        duration = (event.stop - event.start) / 1000;
 
     if (event.channelIcon != null && event.channelIcon.length > 0)
         content += '<img class="x-epg-chicon" src="' + event.channelIcon + '">';
@@ -99,14 +103,22 @@ tvheadend.epgDetails = function(event) {
     content += '</div>';
     if (event.episodeOnscreen)
         content += '<div class="x-epg-title">' + event.episodeOnscreen + '</div>';
+    if (event.start)
+      content += '<div class="x-epg-meta"><div class="x-epg-prefix">Start Time:</div> ' + tvheadend.niceDate(event.start) + '</div>';
+    if (event.stop)
+      content += '<div class="x-epg-meta"><div class="x-epg-prefix">End Time:</div> ' + tvheadend.niceDate(event.stop) + '</div>';
+    if (duration)
+      content += '<div class="x-epg-meta"><div class="x-epg-prefix">Duration:</div> ' + parseInt(duration / 60) + ' min</div>';
     if (event.summary)
       content += '<div class="x-epg-summary">' + event.summary + '</div>';
     if (event.description)
       content += '<div class="x-epg-desc">' + event.description + '</div>';
+    if (event.starRating || event.ageRating || event.genre)
+      content += '<hr/>';
     if (event.starRating)
-      content += '<div class="x-epg-meta">Star Rating: ' + event.starRating + '</div>';
+      content += '<div class="x-epg-meta"><div class="x-epg-prefix">Star Rating:</div> ' + event.starRating + '</div>';
     if (event.ageRating)
-      content += '<div class="x-epg-meta">Age Rating: ' + event.ageRating + '</div>';
+      content += '<div class="x-epg-meta"><div class="x-epg-prefix">Age Rating:</div> ' + event.ageRating + '</div>';
     if (event.genre) {
       var genre = [];
       Ext.each(event.genre, function(g) {
@@ -117,7 +129,7 @@ tvheadend.epgDetails = function(event) {
         if (g1 || g2)
           genre.push((g1 ? '[' + g1 + '] ' : '') + g2);
       });
-      content += '<div class="x-epg-meta">Content Type: ' + genre.join(', ') + '</div>';
+      content += '<div class="x-epg-meta"><div class="x-epg-prefix">Content Type:</div> ' + genre.join(', ') + '</div>';
     }
 
     content += '<div id="related"></div>';
@@ -167,9 +179,9 @@ tvheadend.epgDetails = function(event) {
         if (recording) {
           buttons.push(new Ext.Button({
               handler: stopDVR,
-              iconCls: 'cancel',
+              iconCls: 'stopRec',
               tooltip: 'Stop recording of this program',
-              text: "Stop DVR"
+              text: "Stop record"
           }));
         }
 
@@ -214,8 +226,8 @@ tvheadend.epgDetails = function(event) {
         title: 'Broadcast Details',
         iconCls: 'broadcast_details',
         layout: 'fit',
-        width: 600,
-        height: 400,
+        width: 650,
+        height: 450,
         constrainHeader: true,
         buttons: buttons,
         buttonAlign: 'center',
@@ -247,13 +259,14 @@ tvheadend.epgDetails = function(event) {
 
     function stopDVR() {
         tvheadend.AjaxConfirm({
-            url: 'api/idnode/delete',
+            url: 'api/dvr/entry/cancel',
             params: {
                 uuid: event.dvrUuid,
             },
             success: function(d) {
                 win.close();
-            }
+            },
+            question: 'Do you really want to abort/unschedule this event?'
         });
     }
 
@@ -450,7 +463,7 @@ tvheadend.epg = function() {
             {
                 width: 100,
                 id: 'start',
-                header: "Start",
+                header: "Start Time",
                 dataIndex: 'start',
                 renderer: renderDate
             },
@@ -458,7 +471,7 @@ tvheadend.epg = function() {
                 width: 100,
                 hidden: true,
                 id: 'stop',
-                header: "End",
+                header: "End Time",
                 dataIndex: 'stop',
                 renderer: renderDate
             },

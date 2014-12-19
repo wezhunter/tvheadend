@@ -47,6 +47,7 @@ iptv_http_data
 
   pthread_mutex_lock(&iptv_lock);
 
+  tsdebug_write((mpegts_mux_t *)im, buf, len);
   sbuf_append(&im->mm_iptv_buffer, buf, len);
 
   if (len > 0)
@@ -62,7 +63,7 @@ iptv_http_data
  */
 static int
 iptv_http_start
-  ( iptv_mux_t *im, const url_t *u )
+  ( iptv_mux_t *im, const char *raw, const url_t *u )
 {
   http_client_t *hc;
   int r;
@@ -92,7 +93,9 @@ static void
 iptv_http_stop
   ( iptv_mux_t *im )
 {
+  pthread_mutex_unlock(&iptv_lock);
   http_client_close(im->im_data);
+  pthread_mutex_lock(&iptv_lock);
 }
 
 

@@ -25,16 +25,20 @@ struct profile_chain;
 
 extern struct th_subscription_list subscriptions;
 
-#define SUBSCRIPTION_RAW_MPEGTS 0x01
-#define SUBSCRIPTION_NONE       0x02
-#define SUBSCRIPTION_FULLMUX    0x04
-#define SUBSCRIPTION_STREAMING  0x08
-#define SUBSCRIPTION_RESTART    0x10
+#define SUBSCRIPTION_RAW_MPEGTS 0x001
+#define SUBSCRIPTION_NONE       0x002
+#define SUBSCRIPTION_FULLMUX    0x004
+#define SUBSCRIPTION_STREAMING  0x008
+#define SUBSCRIPTION_RESTART    0x010
+#define SUBSCRIPTION_INITSCAN   0x020 ///< for mux subscriptions
+#define SUBSCRIPTION_IDLESCAN   0x040 ///< for mux subscriptions
+#define SUBSCRIPTION_USERSCAN   0x080 ///< for mux subscriptions
+#define SUBSCRIPTION_EPG        0x100 ///< for mux subscriptions
 
 /* Some internal prioties */
 #define SUBSCRIPTION_PRIO_SCAN_IDLE   1 ///< Idle scanning
 #define SUBSCRIPTION_PRIO_SCAN_SCHED  2 ///< Scheduled scan
-#define SUBSCRIPTION_PRIO_EPG   	    3 ///< EPG scanner
+#define SUBSCRIPTION_PRIO_EPG         3 ///< EPG scanner
 #define SUBSCRIPTION_PRIO_SCAN_INIT   4 ///< Initial scan
 #define SUBSCRIPTION_PRIO_SCAN_USER   5 ///< User defined scan
 #define SUBSCRIPTION_PRIO_MAPPER      6 ///< Channel mapper
@@ -91,6 +95,7 @@ typedef struct th_subscription {
   char *ths_hostname;
   char *ths_username;
   char *ths_client;
+  char *ths_dvrfile;
 
   /**
    * This is the list of service candidates we have

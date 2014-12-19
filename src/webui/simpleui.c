@@ -189,7 +189,7 @@ page_simple(http_connection_t *hc,
     eq.lang = strdup(lang);
 
     //Note: force min/max durations for this interface to 0 and INT_MAX seconds respectively
-    epg_query(&eq);
+    epg_query(&eq, hc->hc_access);
 
     c = eq.entries;
 
@@ -315,8 +315,9 @@ page_einfo(http_connection_t *hc, const char *remain, void *opaque)
   de = dvr_entry_find_by_event(e);
 
   if((http_arg_get(&hc->hc_req_args, "rec")) != NULL) {
-    de = dvr_entry_create_by_event(NULL, e, 0, 0, hc->hc_username ?: "anonymous", NULL,
-				   DVR_PRIO_NORMAL, 0);
+    de = dvr_entry_create_by_event(NULL, e, 0, 0, hc->hc_username ?: NULL,
+                                   hc->hc_representative ?: NULL, NULL,
+				   DVR_PRIO_NORMAL, 0, "simpleui");
   } else if(de != NULL && (http_arg_get(&hc->hc_req_args, "cancel")) != NULL) {
     de = dvr_entry_cancel(de);
   }

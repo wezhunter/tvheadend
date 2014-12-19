@@ -32,6 +32,7 @@
 #include "tvheadend.h"
 #include "channels.h"
 #include "spawn.h"
+#include "file.h"
 #include "htsstr.h"
 
 #include "lang_str.h"
@@ -80,9 +81,6 @@ static time_t _xmltv_str2time(const char *in)
     sscanf(str+sp+1, "%d", &tz);
     tz = (tz % 100) + (tz / 100) * 3600; // Convert from HHMM to seconds
     str[sp] = 0;
-    sp = 1;
-  } else {
-    sp = 0;
   }
 
   /* parse time */
@@ -96,10 +94,7 @@ static time_t _xmltv_str2time(const char *in)
   tm.tm_isdst = -1;
 
   if (r >= 5) {
-    if(sp)
-      return timegm(&tm) - tz;
-    else
-      return mktime(&tm);
+    return timegm(&tm) - tz;
   } else {
     return 0;
   }
@@ -681,14 +676,17 @@ static int _xmltv_parse
 
 static void _xmltv_load_grabbers ( void )
 {
-  int outlen;
+  int outlen = -1, rd = -1;
   size_t i, p, n;
   char *outbuf;
   char name[1000];
   char *tmp, *tmp2 = NULL, *path;
 
   /* Load data */
-  outlen = spawn_and_store_stdout(XMLTV_FIND, NULL, &outbuf);
+  if (spawn_and_give_stdout(XMLTV_FIND, NULL, NULL, &rd, NULL, 1) >= 0)
+    outlen = file_readall(rd, &outbuf);
+  if (rd >= 0)
+    close(rd);
 
   /* Process */
   if ( outlen > 0 ) {
@@ -698,8 +696,13 @@ static void _xmltv_load_grabbers ( void )
         outbuf[i] = '\0';
         sprintf(name, "XMLTV: %s", &outbuf[n]);
         epggrab_module_int_create(NULL, &outbuf[p], name, 3, &outbuf[p],
-                                NULL, _xmltv_parse, NULL, NULL);
+                                  NULL, _xmltv_parse, NULL, NULL);
         p = n = i + 1;
+      } else if ( outbuf[i] == '\\') {
+        memmove(outbuf, outbuf + 1, strlen(outbuf));
+        if (outbuf[i])
+          i++;
+        continue;
       } else if ( outbuf[i] == '|' ) {
         outbuf[i] = '\0';
         n = i + 1;
@@ -712,10 +715,9 @@ static void _xmltv_load_grabbers ( void )
   } else if ((tmp = getenv("PATH"))) {
     tvhdebug("epggrab", "using internal grab search");
     char bin[256];
-    char desc[] = "--description";
     char *argv[] = {
       NULL,
-      desc,
+      (char *)"--description",
       NULL
     };
     path = strdup(tmp);
@@ -732,12 +734,18 @@ static void _xmltv_load_grabbers ( void )
           if (stat(bin, &st)) continue;
           if (!(st.st_mode & S_IEXEC)) continue;
           if (!S_ISREG(st.st_mode)) continue;
-          if ((outlen = spawn_and_store_stdout(bin, argv, &outbuf)) > 0) {
+          rd = -1;
+          if (spawn_and_give_stdout(bin, argv, NULL, &rd, NULL, 1) >= 0 &&
+              (outlen = file_readall(rd, &outbuf)) > 0) {
+            close(rd);
             if (outbuf[outlen-1] == '\n') outbuf[outlen-1] = '\0';
             snprintf(name, sizeof(name), "XMLTV: %s", outbuf);
             epggrab_module_int_create(NULL, bin, name, 3, bin,
                                       NULL, _xmltv_parse, NULL, NULL);
             free(outbuf);
+          } else {
+            if (rd >= 0)
+              close(rd);
           }
         }
         closedir(dir);

@@ -61,6 +61,8 @@ pthread_mutex_t              epggrab_ota_mutex;
 SKEL_DECLARE(epggrab_ota_mux_skel, epggrab_ota_mux_t);
 SKEL_DECLARE(epggrab_svc_link_skel, epggrab_ota_svc_link_t);
 
+static void epggrab_ota_kick ( int delay );
+
 static void epggrab_ota_timeout_cb ( void *p );
 static void epggrab_ota_data_timeout_cb ( void *p );
 static void epggrab_ota_kick_cb ( void *p );
@@ -100,6 +102,41 @@ epggrab_ota_timeout_get ( void )
   return timeout;
 }
 
+static int
+epggrab_ota_queue_one( epggrab_ota_mux_t *om )
+{
+  om->om_done = 0;
+  om->om_requeue = 1;
+  if (om->om_q_type != EPGGRAB_OTA_MUX_IDLE)
+    return 0;
+  TAILQ_INSERT_TAIL(&epggrab_ota_pending, om, om_q_link);
+  om->om_q_type = EPGGRAB_OTA_MUX_PENDING;
+  return 1;
+}
+
+void
+epggrab_ota_queue_mux( mpegts_mux_t *mm )
+{
+  const char *id = idnode_uuid_as_str(&mm->mm_id);
+  epggrab_ota_mux_t *om;
+  int epg_flag;
+
+  if (!mm)
+    return;
+
+  lock_assert(&global_lock);
+
+  epg_flag = mm->mm_is_epg(mm);
+  if (epg_flag < 0 || epg_flag == MM_EPG_DISABLE)
+    return;
+  RB_FOREACH(om, &epggrab_ota_all, om_global_link)
+    if (!strcmp(om->om_mux_uuid, id)) {
+      if (epggrab_ota_queue_one(om))
+        epggrab_ota_kick(4);
+      break;
+    }
+}
+
 static void
 epggrab_ota_requeue ( void )
 {
@@ -108,13 +145,8 @@ epggrab_ota_requeue ( void )
   /*
    * enqueue all muxes, but ommit the delayed ones (active+pending)
    */
-  RB_FOREACH(om, &epggrab_ota_all, om_global_link) {
-    om->om_done = 0;
-    if (om->om_q_type != EPGGRAB_OTA_MUX_IDLE)
-      continue;
-    TAILQ_INSERT_TAIL(&epggrab_ota_pending, om, om_q_link);
-    om->om_q_type = EPGGRAB_OTA_MUX_PENDING;
-  }
+  RB_FOREACH(om, &epggrab_ota_all, om_global_link)
+    epggrab_ota_queue_one(om);
 }
 
 static void
@@ -160,14 +192,19 @@ epggrab_ota_done ( epggrab_ota_mux_t *om, int reason )
   om->om_q_type = EPGGRAB_OTA_MUX_IDLE;
   if (reason == EPGGRAB_OTA_DONE_STOLEN) {
     /* Do not requeue completed muxes */
-    if (!om->om_done) {
+    if (!om->om_done && om->om_requeue) {
       TAILQ_INSERT_HEAD(&epggrab_ota_pending, om, om_q_link);
       om->om_q_type = EPGGRAB_OTA_MUX_PENDING;
+    } else {
+      om->om_requeue = 0;
     }
   } else if (reason == EPGGRAB_OTA_DONE_TIMEOUT) {
+    om->om_requeue = 0;
     LIST_FOREACH(map, &om->om_modules, om_link)
       if (!map->om_complete)
         tvhlog(LOG_WARNING, "epggrab", "%s - data completion timeout for %s", map->om_module->name, name);
+  } else {
+    om->om_requeue = 0;
   }
 
   /* Remove subscriber */
@@ -265,6 +302,7 @@ epggrab_mux_stop ( mpegts_mux_t *mm, void *p )
   epggrab_ota_mux_t *ota;
   const char *uuid = idnode_uuid_as_str(&mm->mm_id);
 
+  tvhtrace("epggrab", "mux %p (%s) stop", mm, uuid);
   TAILQ_FOREACH(ota, &epggrab_ota_active, om_q_link)
     if (!strcmp(ota->om_mux_uuid, uuid)) {
       epggrab_ota_done(ota, EPGGRAB_OTA_DONE_STOLEN);
@@ -399,6 +437,8 @@ epggrab_ota_data_timeout_cb ( void *p )
     epggrab_ota_done(om, EPGGRAB_OTA_DONE_NO_DATA);
     /* Not completed, but no data - wait for a manual mux tuning */
     epggrab_ota_complete_mark(om, 1);
+  } else {
+    tvhtrace("epggrab", "data timeout check succeed");
   }
 }
 
@@ -501,7 +541,9 @@ next_one:
   om->om_force_modname = modname ? strdup(modname) : NULL;
 
   /* Subscribe to the mux */
-  if ((r = mpegts_mux_subscribe(mm, "epggrab", SUBSCRIPTION_PRIO_EPG))) {
+  om->om_requeue = 1;
+  if ((r = mpegts_mux_subscribe(mm, "epggrab", SUBSCRIPTION_PRIO_EPG,
+                                SUBSCRIPTION_EPG))) {
     TAILQ_INSERT_TAIL(&epggrab_ota_pending, om, om_q_link);
     om->om_q_type = EPGGRAB_OTA_MUX_PENDING;
     if (r == SM_CODE_NO_FREE_ADAPTER)
@@ -509,6 +551,7 @@ next_one:
     if (first == NULL)
       first = om;
   } else {
+    tvhtrace("epggrab", "mux %p started", mm);
     kick = 0;
     /* note: it is possible that the mux_start listener is not called */
     /* for reshared mux subscriptions, so call it (maybe second time) here.. */
@@ -705,7 +748,7 @@ epggrab_ota_load_one
     free(ota);
     return;
   }
-  htsmsg_get_u32(c, "complete", (uint32_t *)&ota->om_complete);
+  ota->om_complete = htsmsg_get_u32_or_default(c, "complete", 0) != 0;
 
   if (!(l = htsmsg_get_list(c, "modules"))) return;
   HTSMSG_FOREACH(f, l) {

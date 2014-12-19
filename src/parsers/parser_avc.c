@@ -95,23 +95,24 @@ static int
 avc_parse_nal_units_buf(const uint8_t *buf_in, uint8_t **buf, int *size)
 {
   sbuf_t sb;
+
   sbuf_init(&sb);
+
   avc_parse_nal_units(&sb, buf_in, *size);
 
-  free(*buf);
   *buf = sb.sb_data;
   *size = sb.sb_ptr;
   return 0;
 }
 
 
-static uint32_t 
+static inline uint32_t
 RB32(const uint8_t *d)
 {
   return (d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3];
 }
 
-static uint32_t 
+static inline uint32_t
 RB24(const uint8_t *d)
 {
   return (d[0] << 16) | (d[1] << 8) | d[2];
@@ -119,14 +120,14 @@ RB24(const uint8_t *d)
 
 #define FFMIN(a, b) ((a) > (b) ? (b) : (a))
 
-static int
+int
 isom_write_avcc(sbuf_t *sb, const uint8_t *data, int len)
 {
   if (len > 6) {
     /* check for h264 start code */
     if (RB32(data) == 0x00000001 ||
 	RB24(data) == 0x000001) {
-      uint8_t *buf=NULL, *end, *start;
+      uint8_t *buf, *end, *start;
       uint32_t *sps_size_array=0, *pps_size_array=0;
       uint32_t pps_count=0,sps_count=0;
       uint8_t **sps_array=0, **pps_array=0;
@@ -210,30 +211,17 @@ isom_write_avcc(sbuf_t *sb, const uint8_t *data, int len)
 th_pkt_t *
 avc_convert_pkt(th_pkt_t *src)
 {
-  th_pkt_t *pkt = malloc(sizeof(th_pkt_t));
+  sbuf_t payload;
+  th_pkt_t *pkt = malloc(sizeof(*pkt));
+
   *pkt = *src;
   pkt->pkt_refcount = 1;
   pkt->pkt_meta = NULL;
-  pkt->pkt_payload = NULL;
 
-  if (src->pkt_meta) {
-    sbuf_t headers;
-    sbuf_init(&headers);
-    
-    isom_write_avcc(&headers, pktbuf_ptr(src->pkt_meta),
-		    pktbuf_len(src->pkt_meta));
-    pkt->pkt_meta = pktbuf_make(headers.sb_data, headers.sb_ptr);
-  }
-
-  sbuf_t payload;
   sbuf_init(&payload);
 
-  if(src->pkt_meta)
-    avc_parse_nal_units(&payload, pktbuf_ptr(src->pkt_meta),
-			pktbuf_len(src->pkt_meta));
-
   avc_parse_nal_units(&payload, pktbuf_ptr(src->pkt_payload),
-		      pktbuf_len(src->pkt_payload));
+		                pktbuf_len(src->pkt_payload));
   
   pkt->pkt_payload = pktbuf_make(payload.sb_data, payload.sb_ptr);
   return pkt;

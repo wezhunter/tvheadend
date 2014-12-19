@@ -740,7 +740,7 @@ http_client_data_chunked( http_client_t *hc, char *buf, size_t len, int *end )
     }
     l = 0;
     if (hc->hc_chunk_csize) {
-      s = d = hc->hc_chunk;
+      s = hc->hc_chunk;
       if (buf[0] == '\n' && s[hc->hc_chunk_csize-1] == '\r')
         l = 1;
       else if (len > 1 && buf[0] == '\r' && buf[1] == '\n')
@@ -766,7 +766,10 @@ http_client_data_chunked( http_client_t *hc, char *buf, size_t len, int *end )
           return res;
         continue;
       }
-      if (s[0] == '0' && s[1] == '\0')
+      d = s + 1;
+      while (*d == '0' && *d)
+        d++;
+      if (s[0] == '0' && *d == '\0')
         hc->hc_chunk_trails = 1;
       else {
         hc->hc_chunk_size = strtoll(s, NULL, 16);
@@ -850,10 +853,9 @@ int
 http_client_run( http_client_t *hc )
 {
   char *buf, *saveptr, *argv[3], *d, *p;
-  int ver;
+  int ver, res, delimsize = 4;
   ssize_t r;
   size_t len;
-  int res;
 
   if (hc == NULL)
     return 0;
@@ -882,9 +884,14 @@ http_client_run( http_client_t *hc )
 
   buf = alloca(hc->hc_io_size);
 
-  if (!hc->hc_in_data && hc->hc_rpos > 3 &&
-      (d = strstr(hc->hc_rbuf, "\r\n\r\n")) != NULL)
-    goto header;
+  if (!hc->hc_in_data && hc->hc_rpos > 3) {
+    if ((d = strstr(hc->hc_rbuf, "\r\n\r\n")) != NULL)
+      goto header;
+    if ((d = strstr(hc->hc_rbuf, "\n\n")) != NULL) {
+      delimsize = 2;
+      goto header;
+    }
+  }
 
 retry:
   if (hc->hc_ssl)
@@ -934,8 +941,11 @@ retry:
 next_header:
   if (hc->hc_rpos < 3)
     return HTTP_CON_RECEIVING;
-  if ((d = strstr(hc->hc_rbuf, "\r\n\r\n")) == NULL)
-    return HTTP_CON_RECEIVING;
+  if ((d = strstr(hc->hc_rbuf, "\r\n\r\n")) == NULL) {
+    delimsize = 2;
+    if ((d = strstr(hc->hc_rbuf, "\n\n")) == NULL)
+      return HTTP_CON_RECEIVING;
+  }
 
 header:
   *d = '\0';
@@ -943,7 +953,7 @@ header:
   hc->hc_reconnected = 0;
   http_client_clear_state(hc);
   hc->hc_rpos  = len;
-  hc->hc_hsize = d - hc->hc_rbuf + 4;
+  hc->hc_hsize = d - hc->hc_rbuf + delimsize;
   p = strtok_r(hc->hc_rbuf, "\r\n", &saveptr);
   if (p == NULL)
     return http_client_flush(hc, -EINVAL);
@@ -1642,7 +1652,7 @@ http_client_testsuite_run( void )
   path = getenv("TVHEADEND_HTTPC_TEST");
   if (path == NULL)
     path = TVHEADEND_DATADIR "/support/httpc-test.txt";
-  fp = fopen(path, "r");
+  fp = tvh_fopen(path, "r");
   if (fp == NULL) {
     tvhlog(LOG_NOTICE, "httpc", "Test: unable to open '%s': %s", path, strerror(errno));
     return;

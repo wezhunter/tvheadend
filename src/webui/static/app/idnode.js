@@ -193,6 +193,7 @@ tvheadend.IdNodeField = function(conf)
     this.hidden = conf.hidden || conf.advanced;
     this.password = conf.showpwd ? false : conf.password;
     this.duration = conf.duration;
+    this.date = conf.date;
     this.intsplit = conf.intsplit;
     this.hexa = conf.hexa;
     this.group = conf.group;
@@ -234,7 +235,7 @@ tvheadend.IdNodeField = function(conf)
         } else if (this.type === 'time') {
             w = 120;
             ftype = 'date';
-            if (this.durations) {
+            if (this.duration) {
               ftype = 'numeric';
               w = 80;
             }
@@ -294,9 +295,15 @@ tvheadend.IdNodeField = function(conf)
                     }
                     return min + ' min';
                 }
+            if (this.date) {
+                return function(v) {
+                    var dt = new Date(v * 1000);
+                    return dt.toLocaleDateString();
+                }
+            }
             return function(v) {
                 var dt = new Date(v * 1000);
-                return dt.format('D j M H:i');
+                return dt.toLocaleString();
             }
         }
 
@@ -383,6 +390,7 @@ tvheadend.IdNodeField = function(conf)
                 case 'u32':
                 case 'u16':
                 case 's32':
+                case 's64':
                 case 'dbl':
                 case 'time':
                     if (this.hexa) {
@@ -550,12 +558,24 @@ tvheadend.idnode_editor_field = function(f, conf)
             });
 
         case 'time':
-            if (!f.duration)
+            if (!f.duration) {
+                if (d) {
+                    var dt = new Date(value * 1000);
+                    value = f.date ? dt.toLocaleDateString() :
+                                     dt.toLocaleString();
+                    return new Ext.form.TextField({
+                        fieldLabel: f.caption,
+                        name: f.id,
+                        value: value,
+                        disabled: true,
+                        width: 300
+                    });
+                }
                 return new Ext.ux.form.TwinDateTimeField({
                     fieldLabel: f.caption,
                     name: f.id,
                     value: value,
-                    disabled: d,
+                    disabled: false,
                     width: 300,
                     timeFormat: 'H:i:s',
                     timeConfig: {
@@ -569,6 +589,7 @@ tvheadend.idnode_editor_field = function(f, conf)
                         allowBlank: true
                     }
                 });
+            }
             /* fall thru!!! */
 
         case 'int':
@@ -675,7 +696,8 @@ tvheadend.idnode_editor_form = function(d, meta, panel, conf)
                        autoHeight: true,
                        autoWidth: true,
                        collapsible: conf.nocollapse ? false : true,
-                       collapsed: false,
+                       collapsed: conf.collapsed ? true : false,
+                       animCollapse: true,
                        items: conf.items
                    });
     }
@@ -741,7 +763,7 @@ tvheadend.idnode_editor_form = function(d, meta, panel, conf)
         if (af.length)
             panel.add(newFieldSet({ title: "Advanced Settings", items: af }));
         if (rf.length)
-            panel.add(newFieldSet({ title: "Read-only Info", items: rf }));
+            panel.add(newFieldSet({ title: "Read-only Info", items: rf, collapsed: 'true'}));
     }
     panel.doLayout();
 };
@@ -822,6 +844,7 @@ tvheadend.idnode_create = function(conf, onlyDefault)
     var saveBtn = new Ext.Button({
         tooltip: 'Create new entry',
         text: 'Create',
+        iconCls: 'add',
         hidden: true,
         handler: function() {
             var params = conf.create.params || {};
@@ -842,6 +865,7 @@ tvheadend.idnode_create = function(conf, onlyDefault)
     var undoBtn = new Ext.Button({
         tooltip: 'Cancel operation',
         text: 'Cancel',
+        iconCls: 'cancelButton',
         handler: function() {
             win.close();
         }
@@ -1022,9 +1046,12 @@ tvheadend.idnode_grid = function(panel, conf)
         });
 
         /* Store */
+        var params = {};
+        if (conf.all) params['all'] = 1;
         store = new Ext.data.JsonStore({
             root: 'entries',
             url: conf.gridURL || (conf.url + '/grid'),
+            baseParams: params,
             autoLoad: true,
             id: 'uuid',
             totalProperty: 'total',
@@ -1135,7 +1162,7 @@ tvheadend.idnode_grid = function(panel, conf)
                         var uuids = [];
                         for (var i = 0; i < r.length; i++)
                             uuids.push(r[i].id);
-                        tvheadend.AjaxConfirm({
+                        c = {
                             url: 'api/idnode/delete',
                             params: {
                                 uuid: Ext.encode(uuids)
@@ -1145,7 +1172,10 @@ tvheadend.idnode_grid = function(panel, conf)
                                 if (!auto.getValue())
                                     store.reload();
                             }
-                        });
+                        };
+                        if (conf.delquestion)
+                            c['question'] = conf.delquestion;
+                        tvheadend.AjaxConfirm(c);
                     }
                 }
             });
@@ -1421,6 +1451,7 @@ tvheadend.idnode_grid = function(panel, conf)
         if (!conf.fields) {
             var p = {};
             if (conf.list) p['list'] = conf.list;
+            if (conf.all) p['all'] = 1;
             tvheadend.Ajax({
                 url: conf.url + '/class',
                 params: p,
@@ -1616,7 +1647,7 @@ tvheadend.idnode_form_grid = function(panel, conf)
                 disabled: true,
                 handler: function() {
                     if (current) {
-                        tvheadend.AjaxConfirm({
+                        var c = {
                             url: 'api/idnode/delete',
                             params: {
                                 uuid: current.uuid
@@ -1625,7 +1656,10 @@ tvheadend.idnode_form_grid = function(panel, conf)
                                 roweditor_destroy();
                                 store.reload();
                             }
-                        });
+                        };
+                        if (conf.delquestion)
+                            c['delquestion'] = conf.delquestion;
+                        tvheadend.AjaxConfirm(c);
                     }
                 }
             });

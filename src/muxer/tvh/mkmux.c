@@ -32,6 +32,8 @@
 #include "dvr/dvr.h"
 #include "mkmux.h"
 #include "ebml.h"
+#include "lang_codes.h"
+#include "parsers/parser_avc.h"
 
 extern int dvr_iov_max;
 
@@ -46,7 +48,7 @@ TAILQ_HEAD(mk_chapter_queue, mk_chapter);
  */
 typedef struct mk_track {
   int index;
-  int enabled;
+  int avc;
   int type;
   int tracknum;
   int disabled;
@@ -236,26 +238,28 @@ mk_build_tracks(mk_mux_t *mkm, const streaming_start_t *ss)
   int tracknum = 0;
   uint8_t buf4[4];
   uint32_t bit_depth = 0;
+  mk_track_t *tr;
 
   mkm->tracks = calloc(1, sizeof(mk_track_t) * ss->ss_num_components);
   mkm->ntracks = ss->ss_num_components;
   
   for(i = 0; i < ss->ss_num_components; i++) {
     ssc = &ss->ss_components[i];
+    tr = &mkm->tracks[i];
 
-    mkm->tracks[i].disabled = ssc->ssc_disabled;
+    tr->disabled = ssc->ssc_disabled;
+    tr->index = ssc->ssc_index;
 
-    if(ssc->ssc_disabled)
+    if(tr->disabled)
       continue;
 
-    mkm->tracks[i].index = ssc->ssc_index;
-    mkm->tracks[i].type = ssc->ssc_type;
-    mkm->tracks[i].channels = ssc->ssc_channels;
-    mkm->tracks[i].aspect_num = ssc->ssc_aspect_num;
-    mkm->tracks[i].aspect_den = ssc->ssc_aspect_den;
-    mkm->tracks[i].commercial = COMMERCIAL_UNKNOWN;
-    mkm->tracks[i].sri = ssc->ssc_sri;
-    mkm->tracks[i].nextpts = PTS_UNSET;
+    tr->type = ssc->ssc_type;
+    tr->channels = ssc->ssc_channels;
+    tr->aspect_num = ssc->ssc_aspect_num;
+    tr->aspect_den = ssc->ssc_aspect_den;
+    tr->commercial = COMMERCIAL_UNKNOWN;
+    tr->sri = ssc->ssc_sri;
+    tr->nextpts = PTS_UNSET;
 
     if (mkm->webm && ssc->ssc_type != SCT_VP8 && ssc->ssc_type != SCT_VORBIS)
       tvhwarn("mkv", "WEBM format supports only VP8+VORBIS streams (detected %s)",
@@ -270,6 +274,7 @@ mk_build_tracks(mk_mux_t *mkm, const streaming_start_t *ss)
     case SCT_H264:
       tracktype = 1;
       codec_id = "V_MPEG4/ISO/AVC";
+      tr->avc = 1;
       break;
 
     case SCT_VP8:
@@ -324,18 +329,17 @@ mk_build_tracks(mk_mux_t *mkm, const streaming_start_t *ss)
       break;
 
     default:
+      tr->disabled = 1;
       continue;
     }
 
-    mkm->tracks[i].enabled = 1;
-    tracknum++;
-    mkm->tracks[i].tracknum = tracknum;
+    tr->tracknum = ++tracknum;
     mkm->has_video |= (tracktype == 1);
     
     t = htsbuf_queue_alloc(0);
 
-    ebml_append_uint(t, 0xd7, mkm->tracks[i].tracknum);
-    ebml_append_uint(t, 0x73c5, mkm->tracks[i].tracknum);
+    ebml_append_uint(t, 0xd7, tr->tracknum);
+    ebml_append_uint(t, 0x73c5, tr->tracknum);
     ebml_append_uint(t, 0x83, tracktype);
     ebml_append_uint(t, 0x9c, 0); // Lacing
     ebml_append_string(t, 0x86, codec_id);
@@ -348,10 +352,19 @@ mk_build_tracks(mk_mux_t *mkm, const streaming_start_t *ss)
     case SCT_MPEG2VIDEO:
     case SCT_MP4A:
     case SCT_AAC:
-      if(ssc->ssc_gh)
-	ebml_append_bin(t, 0x63a2, 
-			pktbuf_ptr(ssc->ssc_gh),
-			pktbuf_len(ssc->ssc_gh));
+      if(ssc->ssc_gh) {
+        sbuf_t hdr;
+        sbuf_init(&hdr);
+        if (tr->avc) {
+          isom_write_avcc(&hdr, pktbuf_ptr(ssc->ssc_gh),
+                                pktbuf_len(ssc->ssc_gh));
+        } else {
+          sbuf_append(&hdr, pktbuf_ptr(ssc->ssc_gh),
+                            pktbuf_len(ssc->ssc_gh));
+        }
+        ebml_append_bin(t, 0x63a2, hdr.sb_data, hdr.sb_ptr);
+        sbuf_free(&hdr);
+      }
       break;
       
     case SCT_VORBIS:
@@ -657,17 +670,19 @@ addtag(htsbuf_queue_t *q, htsbuf_queue_t *t)
  *
  */
 static htsbuf_queue_t *
-_mk_build_metadata(const dvr_entry_t *de, const epg_broadcast_t *ebc)
+_mk_build_metadata(const dvr_entry_t *de, const epg_broadcast_t *ebc,
+                   const char *comment)
 {
   htsbuf_queue_t *q = htsbuf_queue_alloc(0);
   char datestr[64], ctype[100];
   const epg_genre_t *eg = NULL;
   epg_genre_t eg0;
   struct tm tm;
-  localtime_r(de ? &de->de_start : &ebc->start, &tm);
+  time_t t;
   epg_episode_t *ee = NULL;
   channel_t *ch = NULL;
-  lang_str_t *ls = NULL;
+  lang_str_t *ls = NULL, *ls2 = NULL;
+  const char **langs, *lang;
 
   if (ebc)                     ee = ebc->episode;
   else if (de && de->de_bcast) ee = de->de_bcast->episode;
@@ -675,6 +690,12 @@ _mk_build_metadata(const dvr_entry_t *de, const epg_broadcast_t *ebc)
   if (de)       ch = de->de_channel;
   else if (ebc) ch = ebc->channel;
 
+  if (de || ebc) {
+    localtime_r(de ? &de->de_start : &ebc->start, &tm);
+  } else {
+    t = time(NULL);
+    localtime_r(&t, &tm);
+  }
   snprintf(datestr, sizeof(datestr),
 	   "%04d-%02d-%02d %02d:%02d:%02d",
 	   tm.tm_year + 1900,
@@ -702,20 +723,31 @@ _mk_build_metadata(const dvr_entry_t *de, const epg_broadcast_t *ebc)
     addtag(q, build_tag_string("TVCHANNEL", 
                                channel_get_name(ch), NULL, 0, NULL));
 
-  if(de && de->de_desc)
-    ls = de->de_desc;
-  else if (ee && ee->description)
-    ls = ee->description;
-  else if (ee && ee->summary)
+  if (ee && ee->summary)
     ls = ee->summary;
-  else if (ebc && ebc->description)
-    ls = ebc->description;
   else if (ebc && ebc->summary)
     ls = ebc->summary;
+
+  if(de && de->de_desc)
+    ls2 = de->de_desc;
+  else if (ee && ee->description)
+    ls2 = ee->description;
+  else if (ebc && ebc->description)
+    ls2 = ebc->description;
+
+  if (!ls)
+    ls = ls2;
+
   if (ls) {
     lang_str_ele_t *e;
     RB_FOREACH(e, ls, link)
       addtag(q, build_tag_string("SUMMARY", e->str, e->lang, 0, NULL));
+  }
+
+  if (ls2 && ls != ls2) {
+    lang_str_ele_t *e;
+    RB_FOREACH(e, ls2, link)
+      addtag(q, build_tag_string("DESCRIPTION", e->str, e->lang, 0, NULL));
   }
 
   if (ee) {
@@ -733,6 +765,15 @@ _mk_build_metadata(const dvr_entry_t *de, const epg_broadcast_t *ebc)
     if (num.text)
       addtag(q, build_tag_string("SYNOPSIS", 
 			       num.text, NULL, 0, NULL));
+  }
+
+  if (comment) {
+    lang = "eng";
+    if ((langs = lang_code_split(NULL)) && langs[0])
+      lang = tvh_strdupa(langs[0]);
+    free(langs);
+
+    addtag(q, build_tag_string("COMMENT", comment, lang, 0, NULL));
   }
 
   return q;
@@ -949,10 +990,14 @@ mk_write_frame_i(mk_mux_t *mkm, mk_track_t *t, th_pkt_t *pkt)
     return;
   }
 
-  if(vkeyframe && mkm->cluster && mkm->cluster->hq_size > mkm->cluster_maxsize)
+  if(vkeyframe && mkm->cluster &&
+     (mkm->cluster->hq_size > mkm->cluster_maxsize ||
+      mkm->cluster_last_close + 1 < dispatch_clock))
     mk_close_cluster(mkm);
 
-  else if(!mkm->has_video && mkm->cluster && mkm->cluster->hq_size > clusersizemax/40)
+  else if(!mkm->has_video && mkm->cluster &&
+          (mkm->cluster->hq_size > clusersizemax/40 ||
+           mkm->cluster_last_close + 1 < dispatch_clock))
     mk_close_cluster(mkm);
 
   else if(mkm->cluster && mkm->cluster->hq_size > clusersizemax)
@@ -992,9 +1037,6 @@ mk_write_frame_i(mk_mux_t *mkm, mk_track_t *t, th_pkt_t *pkt)
   c_delta_flags[2] = (keyframe << 7) | skippable;
   htsbuf_append(mkm->cluster, c_delta_flags, 3);
   htsbuf_append(mkm->cluster, data, len);
-
-  if (mkm->cluster_last_close + 1 < dispatch_clock)
-    mk_close_cluster(mkm);
 }
 
 
@@ -1138,15 +1180,15 @@ mk_mux_write_pkt(mk_mux_t *mkm, th_pkt_t *pkt)
 {
   int i, mark;
   mk_track_t *t = NULL;
-  for(i = 0; i < mkm->ntracks;i++) {
-    if(mkm->tracks[i].index == pkt->pkt_componentindex &&
-       mkm->tracks[i].enabled) {
-      t = &mkm->tracks[i];
+  th_pkt_t *opkt;
+
+  for (i = 0; i < mkm->ntracks; i++) {
+    t = &mkm->tracks[i];
+    if (t->index == pkt->pkt_componentindex && !t->disabled)
       break;
-    }
   }
   
-  if(t == NULL || t->disabled) {
+  if(i >= mkm->ntracks) {
     pkt_ref_dec(pkt);
     return mkm->error;
   }
@@ -1181,6 +1223,11 @@ mk_mux_write_pkt(mk_mux_t *mkm, th_pkt_t *pkt)
   if(mark)
     mk_mux_insert_chapter(mkm);
 
+  if(t->avc) {
+    pkt = avc_convert_pkt(opkt = pkt);
+    pkt_ref_dec(opkt);
+  }
+
   mk_write_frame_i(mkm, t, pkt);
 
   pkt_ref_dec(pkt);
@@ -1194,7 +1241,8 @@ mk_mux_write_pkt(mk_mux_t *mkm, th_pkt_t *pkt)
  */
 int
 mk_mux_write_meta(mk_mux_t *mkm, const dvr_entry_t *de, 
-		  const epg_broadcast_t *ebc)
+		  const epg_broadcast_t *ebc,
+		  const char *comment)
 {
   htsbuf_queue_t q;
 
@@ -1202,7 +1250,7 @@ mk_mux_write_meta(mk_mux_t *mkm, const dvr_entry_t *de,
     mkm->metadata_pos = mkm->fdpos;
 
   htsbuf_queue_init(&q, 0);
-  ebml_append_master(&q, 0x1254c367, _mk_build_metadata(de, ebc));
+  ebml_append_master(&q, 0x1254c367, _mk_build_metadata(de, ebc, comment));
   mk_write_queue(mkm, &q);
 
   return mkm->error;

@@ -38,6 +38,7 @@
 #include "transcoding.h"
 #include "libav.h"
 #include "parsers/bitstream.h"
+#include "parsers/parser_avc.h"
 
 static long transcoder_nrprocessors;
 
@@ -50,6 +51,7 @@ typedef struct transcoder_stream {
   streaming_component_type_t    ts_type;
   streaming_target_t           *ts_target;
   LIST_ENTRY(transcoder_stream) ts_link;
+  int                           ts_first;
 
   void (*ts_handle_pkt) (struct transcoder *, struct transcoder_stream *, th_pkt_t *);
   void (*ts_destroy)    (struct transcoder *, struct transcoder_stream *);
@@ -359,7 +361,6 @@ transcoder_stream_audio(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   audio_stream_t *as = (audio_stream_t*)ts;
   int got_frame, got_packet_ptr;
   AVFrame *frame = av_frame_alloc();
-  uint8_t *output = NULL;
 
   ictx = as->aud_ictx;
   octx = as->aud_octx;
@@ -629,39 +630,46 @@ transcoder_stream_audio(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
 
   if (as->resample) {
 
-    if (av_samples_alloc(&output, NULL, octx->channels, frame->nb_samples, octx->sample_fmt, 0) < 0) {
+    uint8_t **output = alloca(octx->channels * sizeof(uint8_t *));
+
+    if (av_samples_alloc(output, NULL, octx->channels, frame->nb_samples, octx->sample_fmt, 1) < 0) {
       tvherror("transcode", "%04X: av_resamples_alloc failed", shortid(t));
       transcoder_stream_invalidate(ts);
-      goto cleanup;
+      goto scleanup;
     }
 
     length = avresample_convert(as->resample_context, NULL, 0, frame->nb_samples,
                                 frame->extended_data, 0, frame->nb_samples);
     tvhtrace("transcode", "%04X: avresample_convert: %d", shortid(t), length);
     while (avresample_available(as->resample_context) > 0) {
-      length = avresample_read(as->resample_context, &output, frame->nb_samples);
+      length = avresample_read(as->resample_context, output, frame->nb_samples);
 
       if (length > 0) {
         if (av_audio_fifo_realloc(as->fifo, av_audio_fifo_size(as->fifo) + length) < 0) {
           tvhlog(LOG_ERR, "transcode", "%04X: Could not reallocate FIFO", shortid(t));
           transcoder_stream_invalidate(ts);
-          goto cleanup;
+          goto scleanup;
         }
 
-        if (av_audio_fifo_write(as->fifo, (void **)&output, length) < length) {
+        if (av_audio_fifo_write(as->fifo, (void **)output, length) < length) {
           tvhlog(LOG_ERR, "transcode", "%04X: Could not write to FIFO", shortid(t));
-          transcoder_stream_invalidate(ts);
-          goto cleanup;
+          goto scleanup;
         }
       }
+      continue;
 
+scleanup:
+      transcoder_stream_invalidate(ts);
+      av_freep(&output[0]);
+      goto cleanup;
     }
+
+    av_freep(&output[0]);
 
 /*  Need to find out where we are going to do this. Normally at the end.
     int delay_samples = avresample_get_delay(as->resample_context);
     if (delay_samples) {
       tvhlog(LOG_DEBUG, "transcode", "%d samples in resamples delay buffer.", delay_samples);
-      av_freep(&output);
       goto cleanup;
     }
 */
@@ -765,8 +773,6 @@ transcoder_stream_audio(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
 
  cleanup:
 
-  if (output)
-    av_freep(&output);
   av_frame_free(&frame);
   av_free_packet(&packet);
 
@@ -774,8 +780,15 @@ transcoder_stream_audio(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
 }
 
 /**
- *
+ * Parse MPEG2 header, simplifier version (we know what ffmpeg/libav generates
  */
+static inline uint32_t
+RB32(const uint8_t *d)
+{
+  return (d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3];
+}
+
+
 static void
 extract_mpeg2_global_data(th_pkt_t *n, uint8_t *data, int len)
 {
@@ -798,43 +811,39 @@ non intra quantizer matrix		0 or 64*8
 
 Minimal of 12 bytes.
 */
-  uint32_t *mpeg2_header = (uint32_t *)data;
-  if (*mpeg2_header == 0xb3010000) {  // SEQ_START_CODE
-    // Need to determine lentgh of header.
+  int hs = 12;
 
-    int header_size = 12;
+  if (len >= hs && RB32(data) == 0x000001b3) {  // SEQ_START_CODE
 
     // load intra quantizer matrix
-    uint8_t matrix_enabled = (((uint8_t)*(data+(header_size-1)) & 0x02) == 0x02);
-    if (matrix_enabled) 
-      header_size += 64;
+    if (data[hs-1] & 0x02) {
+      if (hs + 64 < len) return;
+      hs += 64;
+    }
 
-    //load non intra quantizer matrix
-    matrix_enabled = (((uint8_t)*(data+(header_size-1)) & 0x01) == 0x01);
-    if (matrix_enabled)
-      header_size += 64;
+    // load non intra quantizer matrix
+    if (data[hs-1] & 0x01) {
+      if (hs + 64 < len) return;
+      hs += 64;
+    }
 
     // See if we have the first EXT_START_CODE. Normally 10 bytes
     // https://git.libav.org/?p=libav.git;a=blob;f=libavcodec/mpeg12enc.c;h=3376f1075f4b7582a8e4556e98deddab3e049dab;hb=HEAD#l272
-    mpeg2_header = (uint32_t *)(data+(header_size));
-    if (*mpeg2_header == 0xb5010000) { // EXT_START_CODE
-      header_size += 10;
+    if (hs + 10 <= len && RB32(data + hs) == 0x000001b5) // EXT_START_CODE
+      hs += 10;
 
-      // See if we have the second EXT_START_CODE. Normally 12 bytes
-      // https://git.libav.org/?p=libav.git;a=blob;f=libavcodec/mpeg12enc.c;h=3376f1075f4b7582a8e4556e98deddab3e049dab;hb=HEAD#l291
-      mpeg2_header = (uint32_t *)(data+(header_size));
-      if (*mpeg2_header == 0xb5010000) { // EXT_START_CODE
-        header_size += 12;
+    // See if we have the second EXT_START_CODE. Normally 12 bytes
+    // https://git.libav.org/?p=libav.git;a=blob;f=libavcodec/mpeg12enc.c;h=3376f1075f4b7582a8e4556e98deddab3e049dab;hb=HEAD#l291
+    // ffmpeg libs might have this block missing
+    if (hs + 12 <= len && RB32(data + hs) == 0x000001b5) // EXT_START_CODE
+      hs += 12;
 
-        // See if we have the second GOP_START_CODE. Normally 31 bits == 4 bytes
-        // https://git.libav.org/?p=libav.git;a=blob;f=libavcodec/mpeg12enc.c;h=3376f1075f4b7582a8e4556e98deddab3e049dab;hb=HEAD#l304
-        mpeg2_header = (uint32_t *)(data+(header_size));
-        if (*mpeg2_header == 0xb8010000) // GOP_START_CODE
-          header_size += 4;
-     }
-    }
+    // See if we have the second GOP_START_CODE. Normally 31 bits == 4 bytes
+    // https://git.libav.org/?p=libav.git;a=blob;f=libavcodec/mpeg12enc.c;h=3376f1075f4b7582a8e4556e98deddab3e049dab;hb=HEAD#l304
+    if (hs + 4 <= len && RB32(data + hs) == 0x000001b8) // GOP_START_CODE
+      hs += 4;
 
-    n->pkt_meta = pktbuf_alloc(data, header_size);
+    n->pkt_meta = pktbuf_alloc(data, hs);
   }
 }
 
@@ -860,7 +869,15 @@ send_video_packet(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt,
   if (!octx->coded_frame)
     return;
 
-  n = pkt_alloc(epkt->data, epkt->size, epkt->pts, epkt->dts);
+  if (ts->ts_type == SCT_H264 && octx->extradata_size &&
+      (ts->ts_first || octx->coded_frame->pict_type == AV_PICTURE_TYPE_I)) {
+    n = pkt_alloc(NULL, octx->extradata_size + epkt->size, epkt->pts, epkt->dts);
+    memcpy(pktbuf_ptr(n->pkt_payload), octx->extradata, octx->extradata_size);
+    memcpy(pktbuf_ptr(n->pkt_payload) + octx->extradata_size, epkt->data, epkt->size);
+    ts->ts_first = 0;
+  } else {
+    n = pkt_alloc(epkt->data, epkt->size, epkt->pts, epkt->dts);
+  }
 
   switch (octx->coded_frame->pict_type) {
   case AV_PICTURE_TYPE_I:
@@ -896,9 +913,9 @@ send_video_packet(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt,
       n->pkt_dts += n->pkt_pts;
   }
 
-  if (octx->extradata_size)
+  if (octx->extradata_size) {
     n->pkt_meta = pktbuf_alloc(octx->extradata, octx->extradata_size);
-  else {
+  } else {
     if (octx->codec_id == AV_CODEC_ID_MPEG2VIDEO)
       extract_mpeg2_global_data(n, epkt->data, epkt->size);
   }
@@ -919,11 +936,16 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   AVCodec *icodec, *ocodec;
   AVCodecContext *ictx, *octx;
   AVDictionary *opts;
-  AVPacket packet;
+  AVPacket packet, packet2;
   AVPicture deint_pic;
-  uint8_t *buf, *out, *deint;
-  int length, len, got_picture;
+  uint8_t *buf, *deint;
+  int length, len, ret, got_picture, got_output, got_ref;
   video_stream_t *vs = (video_stream_t*)ts;
+
+  av_init_packet(&packet);
+  av_init_packet(&packet2);
+  packet2.data = NULL;
+  packet2.size = 0;
 
   ictx = vs->vid_ictx;
   octx = vs->vid_octx;
@@ -931,22 +953,12 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   icodec = vs->vid_icodec;
   ocodec = vs->vid_ocodec;
 
-  buf = out = deint = NULL;
+  buf = deint = NULL;
   opts = NULL;
 
-  if (ictx->codec_id == AV_CODEC_ID_NONE) {
+  got_ref = 0;
 
-    if (icodec->id == AV_CODEC_ID_H264) {
-      if (pkt->pkt_meta) {
-        ictx->extradata_size = pktbuf_len(pkt->pkt_meta);
-        ictx->extradata = av_malloc(ictx->extradata_size);
-        memcpy(ictx->extradata,
-               pktbuf_ptr(pkt->pkt_meta), pktbuf_len(pkt->pkt_meta));
-      } else {
-        /* wait for metadata */
-        return;
-      }
-    }
+  if (ictx->codec_id == AV_CODEC_ID_NONE) {
 
     ictx->codec_id = icodec->id;
 
@@ -956,8 +968,6 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
       goto cleanup;
     }
   }
-
-  av_init_packet(&packet);
 
   packet.data     = pktbuf_ptr(pkt->pkt_payload);
   packet.size     = pktbuf_len(pkt->pkt_payload);
@@ -985,6 +995,8 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
 
   if (!got_picture)
     goto cleanup;
+
+  got_ref = 1;
 
   octx->sample_aspect_ratio.num = ictx->sample_aspect_ratio.num;
   octx->sample_aspect_ratio.den = ictx->sample_aspect_ratio.den;
@@ -1125,7 +1137,6 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
     transcoder_stream_invalidate(ts);
     goto cleanup;
   }
-      
  
   vs->vid_enc_frame->pkt_pts = vs->vid_dec_frame->pkt_pts;
   vs->vid_enc_frame->pkt_dts = vs->vid_dec_frame->pkt_dts;
@@ -1136,17 +1147,9 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   else if (ictx->coded_frame && ictx->coded_frame->pts != AV_NOPTS_VALUE)
     vs->vid_enc_frame->pts = vs->vid_dec_frame->pts;
 
-  AVPacket packet2;
-  int ret, got_output;
-
-  av_init_packet(&packet2);
-  packet2.data = NULL; // packet data will be allocated by the encoder
-  packet2.size = 0;
-
   ret = avcodec_encode_video2(octx, &packet2, vs->vid_enc_frame, &got_output);
   if (ret < 0) {
     tvherror("transcode", "%04X: Error encoding frame", shortid(t));
-    av_free_packet(&packet2);
     transcoder_stream_invalidate(ts);
     goto cleanup;
   }
@@ -1154,16 +1157,16 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   if (got_output)
     send_video_packet(t, ts, pkt, &packet2, octx);
 
+ cleanup:
+  if (got_ref)
+    av_frame_unref(vs->vid_dec_frame);
+
   av_free_packet(&packet2);
 
- cleanup:
   av_free_packet(&packet);
 
   if(buf)
     av_free(buf);
-
-  if(out)
-    av_free(out);
 
   if(deint)
     av_free(deint);

@@ -23,6 +23,7 @@
 #include "idnode.h"
 
 struct access;
+struct bouquet;
 
 RB_HEAD(channel_tree, channel);
 
@@ -42,16 +43,18 @@ typedef struct channel
   idnode_t ch_id;
 
   RB_ENTRY(channel)   ch_link;
-  
+
   int ch_refcount;
   int ch_zombie;
   int ch_load;
 
   /* Channel info */
+  int     ch_enabled;
   char   *ch_name; // Note: do not access directly!
   int64_t ch_number;
   char   *ch_icon;
   struct  channel_tag_mapping_list ch_ctms;
+  struct bouquet *ch_bouquet;
 
   /* Service/subscriptions */
   LIST_HEAD(, channel_service_mapping) ch_services;
@@ -65,6 +68,7 @@ typedef struct channel
   gtimer_t              ch_epg_timer_head;
   gtimer_t              ch_epg_timer_current;
 
+  int ch_epgauto;
   LIST_HEAD(,epggrab_channel_link) ch_epggrab;
 
   /* DVR */
@@ -87,7 +91,9 @@ typedef struct channel_tag {
   TAILQ_ENTRY(channel_tag) ct_link;
 
   int ct_enabled;
+  uint32_t ct_index;
   int ct_internal;
+  int ct_private;
   int ct_titled_icon;
   char *ct_name;
   char *ct_comment;
@@ -174,9 +180,12 @@ htsmsg_t * channel_tag_class_get_list(void *o);
 
 const char * channel_tag_get_icon(channel_tag_t *ct);
 
-int channel_access(channel_t *ch, struct access *a, const char *username);
+int channel_access(channel_t *ch, struct access *a, int disabled);
 
 int channel_tag_map(channel_t *ch, channel_tag_t *ct);
+void channel_tag_unmap(channel_t *ch, channel_tag_t *ct);
+
+int channel_tag_access(channel_tag_t *ct, struct access *a, int disabled);
 
 void channel_save(channel_t *ch);
 

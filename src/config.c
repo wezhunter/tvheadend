@@ -16,6 +16,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <ctype.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -25,12 +26,15 @@
 #include "uuid.h"
 #include "htsbuf.h"
 #include "spawn.h"
+#include "lock.h"
 
 /* *************************************************************************
  * Global data
  * ************************************************************************/
 
 static htsmsg_t *config;
+static char config_lock[PATH_MAX];
+static int config_lock_fd;
 
 /* *************************************************************************
  * Config migration
@@ -1099,6 +1103,62 @@ config_migrate_v15 ( void )
   }
 }
 
+static int
+config_dvr_autorec_start_set(const char *s, int *tm)
+{
+  int t;
+
+  if(s == NULL || s[0] == '\0' || !isdigit(s[0]))
+    t = -1;
+  else if(strchr(s, ':') != NULL)
+    // formatted time string - convert
+    t = (atoi(s) * 60) + atoi(s + 3);
+  else {
+    t = atoi(s);
+  }
+  if (t >= 24 * 60)
+    t = -1;
+  if (t != *tm) {
+    *tm = t;
+    return 1;
+  }
+  return 0;
+}
+
+static void
+config_modify_dvrauto( htsmsg_t *c )
+{
+  int tm = -1;
+  char buf[16];
+
+  if (config_dvr_autorec_start_set(htsmsg_get_str(c, "start"), &tm) > 0 && tm >= 0) {
+    tm -= 15;
+    if (tm < 0)
+      tm += 24 * 60;
+    snprintf(buf, sizeof(buf), "%02d:%02d", tm / 60, tm % 60);
+    htsmsg_set_str(c, "start", tm <= 0 ? "Any" : buf);
+    htsmsg_set_u32(c, "start_window", 30);
+  } else {
+    htsmsg_delete_field(c, "start");
+  }
+}
+
+static void
+config_migrate_v16 ( void )
+{
+  htsmsg_t *c, *e;
+  htsmsg_field_t *f;
+
+  if ((c = hts_settings_load("dvr/autorec")) != NULL) {
+    HTSMSG_FOREACH(f, c) {
+      if (!(e = htsmsg_field_get_map(f))) continue;
+      config_modify_dvrauto(e);
+      hts_settings_save(e, "dvr/autorec/%s", f->hmf_name);
+    }
+    htsmsg_destroy(c);
+  }
+}
+
 /*
  * Perform backup
  */
@@ -1147,7 +1207,7 @@ dobackup(const char *oldver)
                                      root, oldver);
   tvhinfo("config", "backup: running, output file %s", outfile);
 
-  spawnv(argv[0], (void *)argv);
+  spawnv(argv[0], (void *)argv, NULL, 1, 1);
 
   while ((code = spawn_reap(errtxt, sizeof(errtxt))) == -EAGAIN)
     usleep(20000);
@@ -1202,7 +1262,8 @@ static const config_migrate_t config_migrate_table[] = {
   config_migrate_v12,
   config_migrate_v13,
   config_migrate_v14,
-  config_migrate_v15
+  config_migrate_v15,
+  config_migrate_v16
 };
 
 /*
@@ -1329,6 +1390,11 @@ config_init ( const char *path, int backup )
   /* Configure settings routines */
   hts_settings_init(path);
 
+  /* Lock it */
+  hts_settings_buildpath(config_lock, sizeof(config_lock), ".lock");
+  if ((config_lock_fd = file_lock(config_lock, 3)) < 0)
+    exit(78); /* config error */
+
   /* Load global settings */
   config = hts_settings_load("config");
   if (!config) {
@@ -1351,7 +1417,9 @@ config_init ( const char *path, int backup )
 
 void config_done ( void )
 {
+  /* note: tvhlog is inactive !!! */
   htsmsg_destroy(config);
+  file_unlock(config_lock, config_lock_fd);
 }
 
 void config_save ( void )

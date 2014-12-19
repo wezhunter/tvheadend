@@ -17,6 +17,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef ROTOR_TEST
 #include "tvheadend.h"
 #include "linuxdvb_private.h"
 #include "settings.h"
@@ -30,25 +31,46 @@
 #include <math.h>
 #include <linux/dvb/frontend.h>
 
+#else /* ROTOR_TEST */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <math.h>
+
+typedef struct {
+  double   ls_site_lat;
+  double   ls_site_lon;
+  double   ls_site_altitude;
+  int      ls_site_lat_south;
+  int      ls_site_lon_west;
+} linuxdvb_satconf_t;
+
+typedef struct {
+  linuxdvb_satconf_t *lse_parent;
+} linuxdvb_satconf_ele_t;
+
+double gazimuth, gelevation;
+
+#endif
+
 /* **************************************************************************
  * Class definition
  * *************************************************************************/
 
 typedef struct linuxdvb_rotor
 {
+#ifndef ROTOR_TEST
   linuxdvb_diseqc_t;
+#endif
 
-  /* USALS */
-  double    lr_site_lat;
-  double    lr_site_lon;
   double    lr_sat_lon;
-  
-  /* GOTOX */
   uint32_t  lr_position;
 
-  uint32_t  lr_rate;
-
 } linuxdvb_rotor_t;
+
+#ifndef ROTOR_TEST
 
 static const char *
 linuxdvb_rotor_class_get_title ( idnode_t *o )
@@ -77,14 +99,14 @@ const idclass_t linuxdvb_rotor_gotox_class =
     {
       .type   = PT_U16,
       .id     = "position",
-      .name   = "Position",
+      .name   = "GOTOX Position",
       .off    = offsetof(linuxdvb_rotor_t, lr_position),
     },
     {
-      .type   = PT_U16,
-      .id     = "rate",
-      .name   = "Rate (millis/click)",
-      .off    = offsetof(linuxdvb_rotor_t, lr_rate),
+      .type   = PT_DBL,
+      .id     = "sat_lon",
+      .name   = "Satellite Longitude",
+      .off    = offsetof(linuxdvb_rotor_t, lr_sat_lon),
     },
     {}
   }
@@ -98,32 +120,169 @@ const idclass_t linuxdvb_rotor_usals_class =
   .ic_properties  = (const property_t[]) {
     {
       .type   = PT_DBL,
-      .id     = "site_lat",
-      .name   = "Site Latitude",
-      .off    = offsetof(linuxdvb_rotor_t, lr_site_lat),
-    },
-    {
-      .type   = PT_DBL,
-      .id     = "site_lon",
-      .name   = "Site Longitude",
-      .off    = offsetof(linuxdvb_rotor_t, lr_site_lon),
-    },
-    {
-      .type   = PT_DBL,
       .id     = "sat_lon",
       .name   = "Satellite Longitude",
       .off    = offsetof(linuxdvb_rotor_t, lr_sat_lon),
-    },
-    {
-      .type   = PT_U16,
-      .id     = "rate",
-      .name   = "Rate (millis/deg)",
-      .off    = offsetof(linuxdvb_rotor_t, lr_rate),
     },
  
     {}
   }
 };
+
+#endif /* ROTOR_TEST */
+
+/*
+ *
+ */
+
+static inline
+int pos_to_integer( double pos )
+{
+  if (pos < 0)
+    return (pos - 0.05) * 10;
+  else
+    return (pos + 0.05) * 10;
+}
+
+static inline
+double to_radians( double val )
+{
+  return ((val * M_PI) / 180.0);
+}
+
+static inline
+double to_degrees( double val )
+{
+  return ((val * 180.0) / M_PI);
+}
+
+static inline
+double to_rev( double val )
+{
+  return val - floor(val / 360.0) * 360;
+}
+
+static
+void sat_azimuth_and_elevation
+  ( double site_lat, double site_lon, double site_alt, double sat_lon,
+    double *azimuth, double *elevation )
+{
+  const double f     =  1.00 / 298.257;  // Earth flattening factor
+  const double r_sat =  42164.57;        // Distance from earth centre to satellite
+  const double r_eq  =   6378.14;        // Earth radius
+
+  const double a0    =  0.58804392;
+  const double a1    = -0.17941557;
+  const double a2    =  0.29906946E-1;
+  const double a3    = -0.25187400E-2;
+  const double a4    =  0.82622101E-4;
+
+  double sin_site_lat  = sin(to_radians(site_lat));
+  double cos_site_lat  = cos(to_radians(site_lat));
+  double Rstation      = r_eq / sqrt(1.00 - f*(2.00-f)*sin_site_lat*sin_site_lat);
+  double Ra            = (Rstation+site_alt)*cos_site_lat;
+  double Rz            = Rstation*(1.00-f)*(1.00-f)*sin_site_lat;
+  double alfa_rx       = r_sat*cos(to_radians(sat_lon-site_lon)) - Ra;
+  double alfa_ry       = r_sat*sin(to_radians(sat_lon-site_lon));
+  double alfa_rz       = -Rz;
+  double alfa_r_north  = -alfa_rx*sin_site_lat + alfa_rz*cos_site_lat;
+
+  double alfa_r_zenith = alfa_rx*cos_site_lat + alfa_rz*sin_site_lat;
+  double El_geometric  = to_degrees(atan(alfa_r_zenith/sqrt(alfa_r_north*alfa_r_north+alfa_ry*alfa_ry)));
+  double x             = fabs(El_geometric+0.589);
+  double refraction    = fabs(a0+a1*x+a2*x*x+a3*x*x*x+a4*x*x*x*x);
+
+  *azimuth = 0.00;
+  if (alfa_r_north < 0)
+    *azimuth = 180+to_degrees(atan(alfa_ry/alfa_r_north));
+  else
+    *azimuth = to_rev(360+to_degrees(atan(alfa_ry/alfa_r_north)));
+
+  *elevation = 0.00;
+  if (El_geometric > 10.2)
+    *elevation = El_geometric+0.01617*(cos(to_radians(fabs(El_geometric)))/
+                                       sin(to_radians(fabs(El_geometric))));
+  else
+    *elevation = El_geometric+refraction;
+  if (alfa_r_zenith < -3000)
+    *elevation = -99;
+}
+
+/*
+ * Site Latitude
+ * Site Longtitude
+ * Site Altitude
+ * Satellite Longtitute
+ */
+static double
+sat_angle( linuxdvb_rotor_t *lr, linuxdvb_satconf_ele_t *ls )
+{
+  linuxdvb_satconf_t *lsp = ls->lse_parent;
+  double site_lat = lsp->ls_site_lat;
+  double site_lon = lsp->ls_site_lon;
+  double site_alt = lsp->ls_site_altitude;
+  double sat_lon  = lr->lr_sat_lon;
+
+  if (lsp->ls_site_lat_south)
+    site_lat = -site_lat;
+  if (lsp->ls_site_lon_west)
+    site_lon = 360 - site_lon;
+  if (sat_lon < 0)
+    sat_lon = 360 + sat_lon;
+
+  double azimuth, elevation;
+
+#ifndef ROTOR_TEST
+  tvhtrace("diseqc", "site: lat %.4f, lon %.4f, alt %.4f; sat lon %.4f",
+                     site_lat, site_lon, site_alt, sat_lon);
+#endif
+
+  sat_azimuth_and_elevation(site_lat, site_lon, site_alt, sat_lon,
+                            &azimuth, &elevation);
+
+#ifndef ROTOR_TEST
+  tvhtrace("diseqc", "rotor angle azimuth %.4f elevation %.4f", azimuth, elevation);
+#else
+  gazimuth = azimuth;
+  gelevation = elevation;
+#endif
+
+  double rad_azimuth   = to_radians(azimuth);
+  double rad_elevation = to_radians(elevation);
+  double rad_site_lat  = to_radians(site_lat);
+  double cos_elevation = cos(rad_elevation);
+  double a, b, value;
+
+  a = -cos_elevation * sin(rad_azimuth);
+  b =  sin(rad_elevation) * cos(rad_site_lat) -
+       cos_elevation * sin(rad_site_lat) * cos(rad_azimuth);
+
+  value = 180 + to_degrees(atan(a/b));
+
+  if (azimuth > 270) {
+    value = value + 180;
+    if (value > 360)
+      value = 360 - (value-360);
+  }
+  if (azimuth < 90)
+    value = 180 - value;
+
+  int ret;
+
+  if (site_lat >= 0) {
+    ret = round(fabs(180 - value) * 10.0);
+    if (value >= 180)
+      ret = -(ret);
+  } else if (value < 180) {
+    ret = -round(fabs(value) * 10.0);
+  } else {
+    ret = round(fabs(360 - value) * 10.0);
+  }
+
+  return ret;
+}
+
+#ifndef ROTOR_TEST
 
 /* **************************************************************************
  * Class methods
@@ -135,49 +294,50 @@ linuxdvb_rotor_grace
 {
   linuxdvb_rotor_t *lr = (linuxdvb_rotor_t*)ld;
   linuxdvb_satconf_t *ls = ld->ld_satconf->lse_parent;
-  int newpos, curpos, delta, tunit;
+  int newpos, delta, tunit, min, res;
 
-  if (!ls->ls_orbital_dir || lr->lr_rate == 0)
+  if (!ls->ls_last_orbital_pos || ls->ls_motor_rate == 0)
     return ls->ls_max_rotor_move;
 
-  if (idnode_is_instance(&lr->ld_id, &linuxdvb_rotor_gotox_class)) {
-    newpos = lr->lr_position;                /* GotoX */
-    tunit  = 1000;
-  } else {
-    newpos = (lr->lr_sat_lon + 0.05) * 10;   /* USALS */
-    tunit  = 10000;
-  }
+  newpos = pos_to_integer(lr->lr_sat_lon);
 
-  curpos = ls->ls_orbital_pos;
-  if (ls->ls_orbital_dir == 'W')
-    curpos = -(curpos);
-  delta = abs(deltaI32(curpos, newpos));
+  tunit  = 10000; /* 1/1000 sec per one degree */
+
+  delta  = abs(deltaI32(ls->ls_last_orbital_pos, newpos));
 
   /* ignore very small movements like 0.8W and 1W */
   if (delta <= 2)
     return 0;
 
   /* add one extra second, because of the rounding issue */
-  return ((lr->lr_rate*delta+(tunit-1))/tunit) + 1;
+  res = ((ls->ls_motor_rate*delta+(tunit-1))/tunit) + 1;
+
+  min = 1 + ls->ls_min_rotor_move;
+  if (res < min)
+    res = min;
+
+  return res;
 }
 
 static int
 linuxdvb_rotor_check_orbital_pos
-  ( dvb_mux_t *lm, linuxdvb_satconf_ele_t *ls )
+  ( linuxdvb_rotor_t *lr, dvb_mux_t *lm, linuxdvb_satconf_ele_t *ls )
 {
-  int  pos;
+  linuxdvb_satconf_t *lsp = ls->lse_parent;
+  int pos = lsp->ls_last_orbital_pos;
   char dir;
 
-
-  if (dvb_network_get_orbital_pos(lm->mm_network, &pos, &dir) < 0)
+  if (!pos)
     return 0;
 
-  if (dir != ls->lse_parent->ls_orbital_dir)
+  if (abs(pos_to_integer(lr->lr_sat_lon) - pos) > 2)
     return 0;
 
-  if (abs(pos - ls->lse_parent->ls_orbital_pos) > 2)
-    return 0;
-
+  dir = 'E';
+  if (pos < 0) {
+    pos = -(pos);
+    dir = 'W';
+  }
   tvhdebug("diseqc", "rotor already positioned to %i.%i%c",
                      pos / 10, pos % 10, dir);
   return 1;
@@ -189,9 +349,6 @@ linuxdvb_rotor_gotox_tune
   ( linuxdvb_rotor_t *lr, dvb_mux_t *lm, linuxdvb_satconf_ele_t *ls, int fd )
 {
   int i;
-
-  if (linuxdvb_rotor_check_orbital_pos(lm, ls))
-    return 0;
 
   for (i = 0; i <= ls->lse_parent->ls_diseqc_repeats; i++) {
     if (linuxdvb_diseqc_send(fd, 0xE0, 0x31, 0x6B, 1, (int)lr->lr_position)) {
@@ -211,62 +368,26 @@ static int
 linuxdvb_rotor_usals_tune
   ( linuxdvb_rotor_t *lr, dvb_mux_t *lm, linuxdvb_satconf_ele_t *ls, int fd )
 {
-  /*
-   * Code originally written in PR #238 by Jason Millard jsm174
-   *
-   * USALS rotor logic adapted from tune-s2 
-   * http://updatelee.blogspot.com/2010/09/tune-s2.html 
-   *
-   * Antenna Alignment message data format: 
-   * http://www.dvb.org/technology/standards/A155-3_DVB-RCS2_Higher_layer_satellite_spec.pdf 
-   */
+  static const uint8_t xtable[10] =
+         { 0x00, 0x02, 0x03, 0x05, 0x06, 0x08, 0x0A, 0x0B, 0x0D, 0x0E };
 
-#define TO_DEG(x) ((x * 180.0) / M_PI)
-#define TO_RAD(x) ((x * M_PI) / 180.0)
-  
-  int i;
- 
-  static const double r_eq  = 6378.14;
-  static const double r_sat = 42164.57;
+  linuxdvb_satconf_t *lsp = ls->lse_parent;
+  int i, angle = sat_angle(lr, ls);
+  uint32_t cmd = 0xE000;
 
-  double lat = TO_RAD(lr->lr_site_lat);
-  double lon = TO_RAD(lr->lr_site_lon);
-  double pos = TO_RAD(lr->lr_sat_lon);
-     
-  double dishVector[3] = {
-    (r_eq * cos(lat)),
-    0,
-    (r_eq * sin(lat)),
-  };
-     
-  double satVector[3] = {
-    (r_sat * cos(lon - pos)),
-    (r_sat * sin(lon - pos)),
-    0
-  };
+  if (angle < 0) {
+    angle = -(angle);
+    cmd   = 0xD000; 
+  }
+  cmd |= (angle / 10) * 0x10 + xtable[angle % 10];
 
-  double satPointing[3] = {
-    (satVector[0] - dishVector[0]),
-    (satVector[1] - dishVector[1]),
-    (satVector[2] - dishVector[2])
-  };
-
-  double motor_angle = TO_DEG(atan(satPointing[1] / satPointing[0]));
-
-  int sixteenths = ((fabs(motor_angle) * 16.0) + 0.5);
-
-  int angle_1 = (((motor_angle > 0.0) ? 0xd0 : 0xe0) | (sixteenths >> 8));
-  int angle_2 = (sixteenths & 0xff);
- 
-  if (linuxdvb_rotor_check_orbital_pos(lm, ls))
-    return 0;
-
-  tvhtrace("diseqc", "rotor USALS goto %0.1f%c (motor %0.2f %sclockwise)",
+  tvhdebug("diseqc", "rotor USALS goto %0.1f%c (motor %0.1f %sclockwise)",
            fabs(lr->lr_sat_lon), (lr->lr_sat_lon > 0.0) ? 'E' : 'W',
-           motor_angle, (motor_angle > 0.0) ? "counter-" : "");
+           ((double)angle / 10.0), (cmd & 0xF000) == 0xD000 ? "counter-" : "");
 
-  for (i = 0; i <= ls->lse_parent->ls_diseqc_repeats; i++) {
-    if (linuxdvb_diseqc_send(fd, 0xE0, 0x31, 0x6E, 2, angle_1, angle_2)) {
+  for (i = 0; i <= lsp->ls_diseqc_repeats; i++) {
+    if (linuxdvb_diseqc_send(fd, 0xE0, 0x31, 0x6E, 2,
+                             (cmd >> 8) & 0xff, cmd & 0xff)) {
       tvherror("diseqc", "failed to send USALS command");
       return -1;
     }
@@ -274,9 +395,6 @@ linuxdvb_rotor_usals_tune
   }
 
   return linuxdvb_rotor_grace((linuxdvb_diseqc_t*)lr,lm);
-
-#undef TO_RAD
-#undef TO_DEG
 }
 
 static int
@@ -285,12 +403,19 @@ linuxdvb_rotor_tune
 {
   linuxdvb_rotor_t *lr = (linuxdvb_rotor_t*)ld;
 
+  if (linuxdvb_rotor_check_orbital_pos(lr, lm, ls))
+    return 0;
+
+  if (linuxdvb_satconf_tone_off(ls, fd, 1))
+    return -1;
+
   /* Force to 18v (quicker movement) */
   if (ioctl(fd, FE_SET_VOLTAGE, SEC_VOLTAGE_18)) {
     tvherror("diseqc", "failed to set 18v for rotor movement");
     return -1;
   }
   usleep(15000);
+  ls->lse_parent->ls_last_pol = 2;
 
   /* GotoX */
   if (idnode_is_instance(&lr->ld_id, &linuxdvb_rotor_gotox_class))
@@ -298,6 +423,16 @@ linuxdvb_rotor_tune
 
   /* USALS */
   return linuxdvb_rotor_usals_tune(lr, lm, ls, fd);
+}
+
+static int
+linuxdvb_rotor_post
+  ( linuxdvb_diseqc_t *ld, dvb_mux_t *lm, linuxdvb_satconf_ele_t *ls, int fd )
+{
+  linuxdvb_rotor_t *lr = (linuxdvb_rotor_t*)ld;
+
+  ls->lse_parent->ls_last_orbital_pos = pos_to_integer(lr->lr_sat_lon);
+  return 0;
 }
 
 /* **************************************************************************
@@ -344,6 +479,7 @@ linuxdvb_rotor_create0
       if (ld) {
         ld->ld_tune  = linuxdvb_rotor_tune;
         ld->ld_grace = linuxdvb_rotor_grace;
+        ld->ld_post  = linuxdvb_rotor_post;
       }
     }
   }
@@ -357,6 +493,46 @@ linuxdvb_rotor_destroy ( linuxdvb_diseqc_t *lr )
   linuxdvb_diseqc_destroy(lr);
   free(lr);
 }
+
+#else /* ROTOR_TEST */
+
+int main(int argc, char *argv[])
+{
+  if (argc < 5) {
+    fprintf(stderr, "Usage: <site_latitude> <site_lontitude> <site_altitude> <sat_longtitude>\n");
+    return 1;
+  }
+  linuxdvb_rotor_t lr;
+  linuxdvb_satconf_t ls;
+  linuxdvb_satconf_ele_t lse;
+  int angle;
+
+  memset(&lr, 0, sizeof(lr));
+  memset(&ls, 0, sizeof(ls));
+  memset(&lse, 0, sizeof(lse));
+
+  lse.lse_parent = &ls;
+
+  ls.ls_site_lat = atof(argv[1]);
+  ls.ls_site_lon = atof(argv[2]);
+  ls.ls_site_altitude = atof(argv[3]);
+  lr.lr_sat_lon  = atof(argv[4]);
+
+  angle = sat_angle(&lr, &lse);
+
+  printf("Input values:\n");
+  printf("  %20s: %.4f\n", "Site Latidude", ls.ls_site_lat);
+  printf("  %20s: %.4f\n", "Site Longtitude", ls.ls_site_lon);
+  printf("  %20s: %.4f\n", "Site Altitude", ls.ls_site_altitude);
+  printf("  %20s: %.4f\n", "Satellite Longtitude", lr.lr_sat_lon);
+  printf("\nResult:\n");
+  printf("  %20s: %.4f\n", "Azimuth", gazimuth);
+  printf("  %20s: %.4f\n", "Elevation", gelevation);
+  printf("  %20s: %.1f %sclockwise\n", "Angle", (double)abs(angle) / 10.0, angle < 0 ? "counter-" : "");
+  return 0;
+}
+
+#endif
 
 /******************************************************************************
  * Editor Configuration

@@ -32,7 +32,7 @@
  * Connect UDP/RTP
  */
 static int
-iptv_udp_start ( iptv_mux_t *im, const url_t *url )
+iptv_udp_start ( iptv_mux_t *im, const char *raw, const url_t *url )
 {
   char name[256];
   udp_connection_t *conn;
@@ -66,8 +66,10 @@ iptv_udp_stop
   udp_multirecv_t *um = im->im_data;
 
   im->im_data = NULL;
+  pthread_mutex_unlock(&iptv_lock);
   udp_multirecv_free(um);
   free(um);
+  pthread_mutex_lock(&iptv_lock);
 }
 
 static ssize_t
@@ -135,6 +137,7 @@ iptv_rtp_read ( iptv_mux_t *im )
 
     /* Move data */
     len -= hlen;
+    tsdebug_write((mpegts_mux_t *)im, rtp + hlen, len);
     sbuf_append(&im->mm_iptv_buffer, rtp + hlen, len);
     res += len;
   }

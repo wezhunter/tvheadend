@@ -30,9 +30,20 @@ The rows have the following functions
 <p>
   <dt><b>Networks</b></dt>
   <dd>Associate this device with one or more networks.</dd>
+<p>
+  <dt><b>Init Scan</b></dt>
+  <dd>Allow the initial scan tuning on this device.</dd>
+<p>
+  <dt><b>Idle Scan</b></dt>
+  <dd>Allow the idle scan tuning on this device.</dd>
  <p> 
  <dt><b>Power Save</b></dt>
   <dd>If enabled, allows the tuner to go to sleep when idle.</dd>
+ <p>
+ <dt><b>Skip Initial Bytes</b></dt>
+  <dd>If set, first bytes from the MPEG-TS stream are discarded. It may be
+      required for some drivers / hardware which does not flush completely
+      the MPEG-TS buffers after a frequency/parameters change.</dd>
  <p>
  </dl>
  <dt><u><i><b>Advanced Settings</b></i></u></dt>
@@ -74,6 +85,9 @@ setting this to 100.</dd>
 <p>
   <dt><b>PIDs in setup</b></dt>
   <dd>Enable, if the SAT>IP box requires pids=0 parameter in the SETUP RTSP command.</dd>
+<p>
+  <dt><b>Double RTSP Shutdown</b></dt>
+  <dd>Enable, if the SAT>IP box might require to send twice the RTSP SHUTDOWN command.</dd>
 <p>
   <dt><b>Force pilot for DVB-S2</b></dt>
   <dd>Enable, if the SAT>IP box requiest plts=on parameter in the SETUP RTSP

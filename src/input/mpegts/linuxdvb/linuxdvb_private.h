@@ -111,6 +111,8 @@ struct linuxdvb_frontend
    * Configuration
    */
   int                       lfe_powersave;
+  int                       lfe_tune_repeats;
+  uint32_t                  lfe_skip_bytes;
 
   /*
    * Satconf (DVB-S only)
@@ -135,23 +137,31 @@ struct linuxdvb_satconf
   gtimer_t               ls_diseqc_timer;
   int                    ls_diseqc_idx;
   int                    ls_diseqc_repeats;
+  int                    ls_diseqc_full;
+  int                    ls_switch_rotor;
 
   /*
    * LNB settings
    */
   int                    ls_lnb_poweroff;
   uint32_t               ls_max_rotor_move;
-
-  /*
-   * Position
-   */
-  int                    ls_orbital_pos;
-  char                   ls_orbital_dir;
+  uint32_t               ls_min_rotor_move;
+  double                 ls_site_lat;
+  double                 ls_site_lon;
+  uint32_t               ls_motor_rate;
+  int                    ls_site_lat_south;
+  int                    ls_site_lon_west;
+  int                    ls_site_altitude;
   
   /*
    * Satconf elements
    */
   linuxdvb_satconf_ele_list_t ls_elements;
+  linuxdvb_satconf_ele_t *ls_last_switch;
+  int                    ls_last_pol;
+  int                    ls_last_toneburst;
+  int                    ls_last_tone_off;
+  int                    ls_last_orbital_pos;
 };
 
 /*
@@ -194,6 +204,8 @@ struct linuxdvb_diseqc
   linuxdvb_satconf_ele_t   *ld_satconf;
   int (*ld_grace) (linuxdvb_diseqc_t *ld, dvb_mux_t *lm);
   int (*ld_tune)  (linuxdvb_diseqc_t *ld, dvb_mux_t *lm,
+                   linuxdvb_satconf_ele_t *ls, int fd);
+  int (*ld_post)  (linuxdvb_diseqc_t *ld, dvb_mux_t *lm,
                    linuxdvb_satconf_ele_t *ls, int fd);
 };
 
@@ -248,6 +260,8 @@ void linuxdvb_frontend_delete ( linuxdvb_frontend_t *lfe );
 void linuxdvb_frontend_add_network
   ( linuxdvb_frontend_t *lfe, linuxdvb_network_t *net );
 
+int linuxdvb_frontend_clear
+  ( linuxdvb_frontend_t *lfe );
 int linuxdvb_frontend_tune0
   ( linuxdvb_frontend_t *lfe, mpegts_mux_instance_t *mmi, uint32_t freq );
 int linuxdvb_frontend_tune1
@@ -325,5 +339,10 @@ void linuxdvb_satconf_post_stop_mux( linuxdvb_satconf_t *ls );
 
 int linuxdvb_satconf_start_mux
   ( linuxdvb_satconf_t *ls, mpegts_mux_instance_t *mmi );
+
+int linuxdvb_satconf_tone_off( linuxdvb_satconf_ele_t *ls, int fd, int delay );
+
+void linuxdvb_satconf_reset
+  ( linuxdvb_satconf_t *ls );
 
 #endif /* __TVH_LINUXDVB_PRIVATE_H__ */

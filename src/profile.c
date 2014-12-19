@@ -524,10 +524,8 @@ profile_sharer_deliver(profile_chain_t *prch, streaming_message_t *sm)
     if (!prch->prch_ts_delta)
       goto deliver;
     th_pkt_t *pkt = sm->sm_data;
-    if (prch->prch_ts_delta == PTS_UNSET) {
+    if (prch->prch_ts_delta == PTS_UNSET)
       prch->prch_ts_delta = MAX(0, pkt->pkt_dts - 10000);
-      printf("ts delta: %li\n", (long)prch->prch_ts_delta);
-    }
     /*
      * time correction here
      */
@@ -571,6 +569,9 @@ profile_sharer_input(void *opaque, streaming_message_t *sm)
       }
       if (run)
         profile_sharer_deliver(run, streaming_msg_clone(sm));
+      run = prch;
+      continue;
+    } else if (sm->sm_type == SMT_STOP) {
       run = prch;
       continue;
     }
@@ -804,6 +805,8 @@ profile_htsp_work(profile_chain_t *prch,
   if (timeshift_period > 0)
     dst = prch->prch_timeshift = timeshift_create(dst, timeshift_period);
 #endif
+
+  dst = prch->prch_gh = globalheaders_create(dst);
 
   if (profile_sharer_create(prsh, prch, dst))
     goto fail;
@@ -1296,6 +1299,8 @@ profile_transcode_work(profile_chain_t *prch,
   props.tp_bandwidth  = profile_transcode_bandwidth(pro);
   strncpy(props.tp_language, pro->pro_language ?: "", 3);
 
+  dst = prch->prch_gh = globalheaders_create(dst);
+
 #if ENABLE_TIMESHIFT
   if (timeshift_period > 0)
     dst = prch->prch_timeshift = timeshift_create(dst, timeshift_period);
@@ -1364,9 +1369,7 @@ profile_transcode_open(profile_chain_t *prch,
 
   prch->prch_sq.sq_maxsize = qsize;
 
-  prch->prch_gh = globalheaders_create(&prch->prch_sq.sq_st);
-
-  r = profile_transcode_work(prch, prch->prch_gh, 0, 0);
+  r = profile_transcode_work(prch, &prch->prch_sq.sq_st, 0, 0);
   if (r) {
     profile_chain_close(prch);
     return r;
@@ -1440,7 +1443,7 @@ profile_init(void)
   }
 
   name = "pass";
-  pro = profile_find_by_name2(name, NULL,1 );
+  pro = profile_find_by_name2(name, NULL, 1);
   if (pro == NULL || strcmp(pro->pro_name, name)) {
     htsmsg_t *conf;
 
@@ -1547,6 +1550,13 @@ profile_init(void)
     htsmsg_destroy(conf);
   }
 #endif
+
+  /* Assign the default profile if config files are corrupted */
+  if (!profile_default) {
+    pro = profile_find_by_name2("pass", NULL, 1);
+    assert(pro);
+    profile_default = pro;
+  }
 }
 
 void

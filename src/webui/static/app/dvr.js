@@ -18,6 +18,7 @@ tvheadend.dvrDetails = function(uuid) {
         var desc = params[6].value;
         var status = params[7].value;
         var filesize = params[8].value;
+        var comment = params[9].value;
         var content = '';
         var but;
 
@@ -26,13 +27,15 @@ tvheadend.dvrDetails = function(uuid) {
 
         content += '<div class="x-epg-title">' + title + '</div>';
         content += '<div class="x-epg-title">' + episode + '</div>';
-        content += '<div class="x-epg-meta">Scheduled Start Time: ' + new Date(start_real * 1000).toLocaleString() + '</div>';
-        content += '<div class="x-epg-meta">Scheduled Stop Time: ' + new Date(stop_real * 1000).toLocaleString() + '</div>';
-        content += '<div class="x-epg-meta">Duration: ' + parseInt(duration / 60) + ' min</div>';        
+        content += '<div class="x-epg-time"><div class="x-epg-prefix">Scheduled Start Time:</div> ' + tvheadend.niceDate(start_real * 1000) + '</div>';
+        content += '<div class="x-epg-time"><div class="x-epg-prefix">Scheduled Stop Time:</div> ' + tvheadend.niceDate(stop_real * 1000) + '</div>';
+        content += '<div class="x-epg-time"><div class="x-epg-prefix">Duration:</div> ' + parseInt(duration / 60) + ' min</div>';
         content += '<div class="x-epg-desc">' + desc + '</div>';
         content += '<hr>';
-        content += '<div class="x-epg-meta">Status: ' + status + '</div>';
-        content += '<div class="x-epg-meta">File size: ' + parseInt(filesize / 1000000) + ' MB</div>';
+        content += '<div class="x-epg-meta"><div class="x-epg-prefix">Status:</div> ' + status + '</div>';
+        content += '<div class="x-epg-meta"><div class="x-epg-prefix">File size:</div> ' + parseInt(filesize / 1000000) + ' MB</div>';
+        if (comment)
+          content += '<div class="x-epg-meta"><div class="x-epg-prefix">Comment:</div> ' + comment + '</div>';
 
         var win = new Ext.Window({
             title: title,
@@ -54,7 +57,7 @@ tvheadend.dvrDetails = function(uuid) {
         params: {
             uuid: uuid,
             list: 'channel_icon,disp_title,episode,start_real,stop_real,' +
-                  'duration,disp_description,status,filesize'
+                  'duration,disp_description,status,filesize,comment'
         },
         success: function(d) {
             d = json_decode(d);
@@ -114,6 +117,21 @@ tvheadend.weekdaysRenderer = function(st) {
     }
 }
 
+tvheadend.filesizeRenderer = function(st) {
+    return function() {
+        return function(v) {
+            if (v == null)
+                return '';
+            if (!v || v < 0)
+                return '---';
+            if (v > 1000000)
+                return parseInt(v / 1000000) + ' MB';
+            if (v > 1000)
+                return parseInt(v / 1000) + ' KB';
+            return parseInt(v) + ' B';
+        }
+    }
+}
 
 /**
  *
@@ -122,14 +140,14 @@ tvheadend.dvr_upcoming = function(panel, index) {
 
     var actions = tvheadend.dvrRowActions();
     var list = 'disp_title,start,start_extra,stop,stop_extra,' +
-               'channel,config_name';
+               'channel,config_name,comment';
 
     var abortButton = {
         name: 'abort',
         builder: function() {
             return new Ext.Toolbar.Button({
                 tooltip: 'Abort the selected recording',
-                iconCls: 'cancel',
+                iconCls: 'abort',
                 text: 'Abort',
                 disabled: true
             });
@@ -189,8 +207,8 @@ tvheadend.dvr_upcoming = function(panel, index) {
         },
         del: true,
         list: 'disp_title,episode,pri,start_real,stop_real,' +
-              'duration,channelname,creator,config_name,' +
-              'sched_status',
+              'duration,channelname,owner,creator,config_name,' +
+              'sched_status,comment',
         sort: {
           field: 'start_real',
           direction: 'ASC'
@@ -220,7 +238,7 @@ tvheadend.dvr_finished = function(panel, index) {
         builder: function() {
             return new Ext.Toolbar.Button({
                 tooltip: 'Download the selected recording',
-                iconCls: 'save',
+                iconCls: 'download',
                 text: 'Download',
                 disabled: true
             });
@@ -235,8 +253,9 @@ tvheadend.dvr_finished = function(panel, index) {
     };
 
     function selected(s, abuttons) {
-        var count = s.getCount();
-        abuttons.download.setDisabled(count < 1);
+        var r = s.getSelections();
+        var b = r.length > 0 && r[0].data.filesize > 0;
+        abuttons.download.setDisabled(!b);
     }
 
     tvheadend.idnode_grid(panel, {
@@ -248,18 +267,14 @@ tvheadend.dvr_finished = function(panel, index) {
         iconCls: 'finishedRec',
         tabIndex: index,
         del: true,
+        delquestion: 'Do you really want to delete the selected recordings?<br/><br/>' +
+                     'The associated file will be removed from the storage.',
         list: 'disp_title,episode,start_real,stop_real,' +
-              'duration,filesize,channelname,creator,' +
-              'sched_status,url',
+              'duration,filesize,channelname,owner,creator,' +
+              'sched_status,url,comment',
         columns: {
             filesize: {
-                renderer: function() {
-                    return function(v) {
-                        if (v == null)
-                            return '';
-                        return parseInt(v / 1000000) + ' MB';
-                    }
-                }
+                renderer: tvheadend.filesizeRenderer()
             }
         },
         sort: {
@@ -302,7 +317,7 @@ tvheadend.dvr_failed = function(panel, index) {
         builder: function() {
             return new Ext.Toolbar.Button({
                 tooltip: 'Download the selected recording',
-                iconCls: 'save',
+                iconCls: 'download',
                 text: 'Download',
                 disabled: true
             });
@@ -317,8 +332,9 @@ tvheadend.dvr_failed = function(panel, index) {
     };
 
     function selected(s, abuttons) {
-        var count = s.getCount();
-        abuttons.download.setDisabled(count < 1);
+        var r = s.getSelections();
+        var b = r.length > 0 && r[0].data.filesize > 0;
+        abuttons.download.setDisabled(!b);
     }
 
     tvheadend.idnode_grid(panel, {
@@ -331,18 +347,14 @@ tvheadend.dvr_failed = function(panel, index) {
         iconCls: 'exclamation',
         tabIndex: index,
         del: true,
+        delquestion: 'Do you really want to delete the selected recordings?<br/><br/>' +
+                     'The associated file will be removed from the storage.',
         list: 'disp_title,episode,start_real,stop_real,' +
-              'duration,channelname,creator,' +
-              'status,sched_status,url',
-		columns: {
+              'duration,filesize,channelname,owner,creator,' +
+              'status,sched_status,url,comment',
+        columns: {
             filesize: {
-                renderer: function() {
-                    return function(v) {
-                        if (v == null)
-                            return '';
-                        return parseInt(v / 1000000) + ' MB';
-                    }
-                }
+                renderer: tvheadend.filesizeRenderer()
             }
         },
         sort: {
@@ -422,8 +434,10 @@ tvheadend.autorec_editor = function(panel, index) {
             maxduration:  { width: 80 },
             weekdays:     { width: 160 },
             start:        { width: 100 },
+            start_window: { width: 100 },
             pri:          { width: 80 },
             config_name:  { width: 120 },
+            owner:        { width: 100 },
             creator:      { width: 200 },
             comment:      { width: 200 }
         },
@@ -431,13 +445,13 @@ tvheadend.autorec_editor = function(panel, index) {
             url: 'api/dvr/autorec',
             params: {
                list: 'enabled,name,title,channel,tag,content_type,minduration,' +
-                     'maxduration,weekdays,start,pri,config_name,comment'
+                     'maxduration,weekdays,start,start_window,pri,config_name,comment'
             },
             create: { }
         },
         del: true,
         list: 'enabled,name,title,channel,tag,content_type,minduration,' +
-              'maxduration,weekdays,start,pri,config_name,creator,comment',
+              'maxduration,weekdays,start,start_window,pri,config_name,owner,creator,comment',
         columns: {
             weekdays: {
                 renderer: function(st) { return tvheadend.weekdaysRenderer(st); }
@@ -477,6 +491,7 @@ tvheadend.timerec_editor = function(panel, index) {
             stop:         { width: 100 },
             pri:          { width: 80 },
             config_name:  { width: 120 },
+            owner:        { width: 100 },
             creator:      { width: 200 },
             comment:      { width: 200 }
         },
@@ -488,7 +503,7 @@ tvheadend.timerec_editor = function(panel, index) {
             create: { }
         },
         del: true,
-        list: 'enabled,name,title,channel,weekdays,start,stop,pri,config_name,comment',
+        list: 'enabled,name,title,channel,weekdays,start,stop,pri,config_name,owner,creator,comment',
         columns: {
             weekdays: {
                 renderer: function(st) { return tvheadend.weekdaysRenderer(st); }

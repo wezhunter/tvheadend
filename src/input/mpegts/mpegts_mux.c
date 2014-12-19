@@ -21,14 +21,13 @@
 #include "queue.h"
 #include "input.h"
 #include "subscriptions.h"
+#include "streaming.h"
 #include "channels.h"
 #include "access.h"
 #include "profile.h"
 #include "dvb_charset.h"
 
 #include <assert.h>
-
-SKEL_DECLARE(mpegts_pid_skel, mpegts_pid_t);
 
 static void mpegts_mux_scan_timeout ( void *p );
 
@@ -43,7 +42,7 @@ const idclass_t mpegts_mux_instance_class =
   .ic_perm_def   = ACCESS_ADMIN
 };
 
-static void
+void
 mpegts_mux_instance_delete
   ( mpegts_mux_instance_t *mmi )
 {
@@ -257,7 +256,7 @@ scan_result_tab[] = {
  { "FAIL",    MM_SCAN_FAIL },
 };
 
-static int
+int
 mpegts_mux_class_scan_state_set ( void *o, const void *p )
 {
   mpegts_mux_t *mm = o;
@@ -275,7 +274,8 @@ mpegts_mux_class_scan_state_set ( void *o, const void *p )
       return 0;
 
     /* Start */
-    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_USER);
+    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_USER,
+                                  SUBSCRIPTION_USERSCAN, 0);
 
   /* Stop */
   } else if (state == MM_SCAN_STATE_IDLE) {
@@ -538,8 +538,8 @@ mpegts_mux_start
   int64_t aweight, *allw;
 
   mpegts_mux_nice_name(mm, buf, sizeof(buf));
-  tvhtrace("mpegts", "%s - starting for '%s' (weight %d)",
-           buf, reason, weight);
+  tvhtrace("mpegts", "%s - starting for '%s' (weight %d. flags %04X)",
+           buf, reason, weight, flags);
 
   /* Disabled */
   if (!mm->mm_is_enabled(mm)) {
@@ -570,7 +570,7 @@ mpegts_mux_start
   /* Calculate priority+weight and sort */
   count = 0;
   LIST_FOREACH(mmi, &mm->mm_instances, mmi_mux_link) {
-    int e = mmi->mmi_input->mi_is_enabled(mmi->mmi_input, mm, reason);
+    int e = mmi->mmi_input->mi_is_enabled(mmi->mmi_input, mm, flags);
     tvhtrace("mpegts", "%s -   mmi %p enabled %d", buf, mmi, e);
     if (!e) continue;
     enabled = 1;
@@ -720,23 +720,20 @@ mpegts_mux_stop ( mpegts_mux_t *mm, int force )
   while ((mp = RB_FIRST(&mm->mm_pids))) {
     assert(mi);
     while ((mps = RB_FIRST(&mp->mp_subs))) {
+      tvhdebug("mpegts", "%s - close PID %04X (%d) [%d/%p]", buf,
+               mp->mp_pid, mp->mp_pid, mps->mps_type, mps->mps_owner);
       RB_REMOVE(&mp->mp_subs, mps, mps_link);
       free(mps);
     }
     RB_REMOVE(&mm->mm_pids, mp, mp_link);
-    if (mp->mp_fd != -1) {
-      tvhdebug("mpegts", "%s - close PID %04X (%d)", buf, mp->mp_pid, mp->mp_pid);
-      close(mp->mp_fd);
-    }
+    if (mp->mp_fd != -1)
+      linuxdvb_filter_close(mp->mp_fd);
     free(mp);
   }
   pthread_mutex_unlock(&mi->mi_output_lock);
 
   /* Scanning */
   mpegts_network_scan_mux_cancel(mm, 1);
-  if (mm->mm_scan_state == MM_SCAN_STATE_IDLE &&
-      mm->mm_network->mn_idlescan)
-    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_IDLE);
 
   /* Events */
   mpegts_fire_event(mm, ml_mux_stop);
@@ -770,16 +767,16 @@ mpegts_mux_open_table ( mpegts_mux_t *mm, mpegts_table_t *mt, int subscribe )
   mi = mm->mm_active->mmi_input;
   LIST_INSERT_HEAD(&mm->mm_tables, mt, mt_link);
   mm->mm_num_tables++;
-  mpegts_table_grab(mt);
-  pthread_mutex_unlock(&mm->mm_tables_lock);
-  pthread_mutex_lock(&mi->mi_output_lock);
-  if (subscribe) {
-    mi->mi_open_pid(mi, mm, mt->mt_pid, mpegts_table_type(mt), mt);
+  if (subscribe && !mt->mt_subscribed) {
+    mpegts_table_grab(mt);
     mt->mt_subscribed = 1;
+    pthread_mutex_unlock(&mm->mm_tables_lock);
+    pthread_mutex_lock(&mi->mi_output_lock);
+    mi->mi_open_pid(mi, mm, mt->mt_pid, mpegts_table_type(mt), mt);
+    pthread_mutex_unlock(&mi->mi_output_lock);
+    pthread_mutex_lock(&mm->mm_tables_lock);
+    mpegts_table_release(mt);
   }
-  pthread_mutex_unlock(&mi->mi_output_lock);
-  pthread_mutex_lock(&mm->mm_tables_lock);
-  mpegts_table_release(mt);
 }
 
 void
@@ -819,16 +816,16 @@ mpegts_mux_close_table ( mpegts_mux_t *mm, mpegts_table_t *mt )
   mi = mm->mm_active->mmi_input;
   LIST_REMOVE(mt, mt_link);
   mm->mm_num_tables--;
-  mpegts_table_grab(mt);
-  pthread_mutex_unlock(&mm->mm_tables_lock);
-  pthread_mutex_lock(&mi->mi_output_lock);
   if (mt->mt_subscribed) {
-    mi->mi_close_pid(mi, mm, mt->mt_pid, mpegts_table_type(mt), mt);
+    mpegts_table_grab(mt);
     mt->mt_subscribed = 0;
+    pthread_mutex_unlock(&mm->mm_tables_lock);
+    pthread_mutex_lock(&mi->mi_output_lock);
+    mi->mi_close_pid(mi, mm, mt->mt_pid, mpegts_table_type(mt), mt);
+    pthread_mutex_unlock(&mi->mi_output_lock);
+    pthread_mutex_lock(&mm->mm_tables_lock);
+    mpegts_table_release(mt);
   }
-  pthread_mutex_unlock(&mi->mi_output_lock);
-  pthread_mutex_lock(&mm->mm_tables_lock);
-  mpegts_table_release(mt);
 }
 
 /* **************************************************************************
@@ -866,7 +863,7 @@ mpegts_mux_scan_done ( mpegts_mux_t *mm, const char *buf, int res )
 static void
 mpegts_mux_scan_timeout ( void *aux )
 {
-  int c, q;
+  int c, q, w;
   char buf[256];
   mpegts_mux_t *mm = aux;
   mpegts_table_t *mt;
@@ -884,17 +881,19 @@ mpegts_mux_scan_timeout ( void *aux )
 again:
   pthread_mutex_lock(&mm->mm_tables_lock);
   mpegts_table_consistency_check(mm);
-  c = q = 0;
+  c = q = w = 0;
   LIST_FOREACH(mt, &mm->mm_tables, mt_link) {
-    if (!(mt->mt_flags & MT_QUICKREQ)) continue;
+    if (!(mt->mt_flags & MT_QUICKREQ) && !mt->mt_working) continue;
     if (!mt->mt_count) {
       mpegts_table_grab(mt);
       pthread_mutex_unlock(&mm->mm_tables_lock);
       mpegts_table_destroy(mt);
       mpegts_table_release(mt);
       goto again;
-    } else if (!mt->mt_complete) {
+    } else if (!mt->mt_complete || mt->mt_working) {
       q++;
+      if (mt->mt_working)
+        w++;
     } else {
       c++;
     }
@@ -906,10 +905,10 @@ again:
     tvhinfo("mpegts", "%s - scan no data, failed", buf);
     mpegts_mux_scan_done(mm, buf, 0);
 
-  /* Pending tables (another 20s - bit arbitrary) */
+  /* Pending tables (another 20s or 30s - bit arbitrary) */
   } else if (q) {
-    tvhinfo("mepgts", "%s - scan needs more time", buf);
-    gtimer_arm(&mm->mm_scan_timeout, mpegts_mux_scan_timeout, mm, 20);
+    tvhinfo("mpegts", "%s - scan needs more time", buf);
+    gtimer_arm(&mm->mm_scan_timeout, mpegts_mux_scan_timeout, mm, w ? 30 : 20);
     return;
 
   /* Complete */
@@ -980,9 +979,11 @@ mpegts_mux_create0
 
   /* Initial scan */
   if (mm->mm_scan_result == MM_SCAN_NONE || !mn->mn_skipinitscan)
-    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT);
+    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_INIT,
+                                  SUBSCRIPTION_INITSCAN, 10);
   else if (mm->mm_network->mn_idlescan)
-    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_IDLE);
+    mpegts_network_scan_queue_add(mm, SUBSCRIPTION_PRIO_SCAN_IDLE,
+                                  SUBSCRIPTION_IDLESCAN, 10);
 
   mpegts_mux_nice_name(mm, buf, sizeof(buf));
   tvhtrace("mpegts", "%s - created", buf);
@@ -1080,7 +1081,7 @@ mpegts_mux_remove_subscriber
 
 int
 mpegts_mux_subscribe
-  ( mpegts_mux_t *mm, const char *name, int weight )
+  ( mpegts_mux_t *mm, const char *name, int weight, int flags )
 {
   int err = 0;
   profile_chain_t prch;
@@ -1088,7 +1089,7 @@ mpegts_mux_subscribe
   memset(&prch, 0, sizeof(prch));
   prch.prch_id = mm;
   s = subscription_create_from_mux(&prch, weight, name,
-                                   SUBSCRIPTION_NONE,
+                                   SUBSCRIPTION_NONE | flags,
                                    NULL, NULL, NULL, &err);
   return s ? 0 : err;
 }
@@ -1111,12 +1112,31 @@ mpegts_mux_unsubscribe_by_name
   }
 }
 
+void
+mpegts_mux_tuning_error ( mpegts_mux_t *mm )
+{
+  th_subscription_t *sub;
+  mpegts_mux_instance_t *mmi;
+  streaming_message_t *sm;
+
+  lock_assert(&global_lock);
+
+  if ((mmi = mm->mm_active) != NULL) {
+    LIST_FOREACH(sub, &mmi->mmi_subs, ths_mmi_link) {
+      sm = streaming_msg_create_code(SMT_SERVICE_STATUS, TSS_TUNING);
+      streaming_target_deliver(sub->ths_output, sm);
+    }
+    if (mmi->mmi_input)
+      mmi->mmi_input->mi_tuning_error(mmi->mmi_input, mm);
+  }
+}
+
 /* **************************************************************************
  * Search
  * *************************************************************************/
 
 mpegts_service_t *
-mpegts_mux_find_service ( mpegts_mux_t *mm, uint16_t sid)
+mpegts_mux_find_service ( mpegts_mux_t *mm, uint16_t sid )
 {
   mpegts_service_t *ms;
   LIST_FOREACH(ms, &mm->mm_services, s_dvb_mux_link)
@@ -1128,28 +1148,26 @@ mpegts_mux_find_service ( mpegts_mux_t *mm, uint16_t sid)
 static int mp_cmp ( mpegts_pid_t *a, mpegts_pid_t *b )
 {
   return a->mp_pid - b->mp_pid;
-};
+}
 
 mpegts_pid_t *
 mpegts_mux_find_pid_ ( mpegts_mux_t *mm, int pid, int create )
 {
-  mpegts_pid_t *mp;
-  
+  mpegts_pid_t skel, *mp;
+
   if (pid > 0x2000) return NULL;
 
-  if (!create) {
-    mpegts_pid_t skel;
-    skel.mp_pid = pid;
-    mp = RB_FIND(&mm->mm_pids, &skel, mp_link, mp_cmp);
-  } else {
-    SKEL_ALLOC(mpegts_pid_skel);
-    mpegts_pid_skel->mp_pid = pid;
-    mp = RB_INSERT_SORTED(&mm->mm_pids, mpegts_pid_skel, mp_link, mp_cmp);
-    if (!mp) {
-      mp = mpegts_pid_skel;
-      SKEL_USED(mpegts_pid_skel);
+  skel.mp_pid = pid;
+  mp = RB_FIND(&mm->mm_pids, &skel, mp_link, mp_cmp);
+  if (mp == NULL && create) {
+    mp = calloc(1, sizeof(*mp));
+    mp->mp_pid = pid;
+    if (!RB_INSERT_SORTED(&mm->mm_pids, mp, mp_link, mp_cmp)) {
       mp->mp_fd = -1;
       mp->mp_cc = -1;
+    } else {
+      free(mp);
+      mp = NULL;
     }
   }
   if (mp) {

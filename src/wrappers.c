@@ -28,7 +28,6 @@ tvh_open(const char *pathname, int flags, mode_t mode)
   return fd;
 }
 
-
 int
 tvh_socket(int domain, int type, int protocol)
 {
@@ -90,6 +89,25 @@ tvh_write(int fd, const void *buf, size_t len)
   return len ? 1 : 0;
 }
 
+FILE *
+tvh_fopen(const char *filename, const char *mode)
+{
+  FILE *f;
+  int fd;
+  pthread_mutex_lock(&fork_lock);
+  f = fopen(filename, mode);
+  if (f) {
+    fd = fileno(f);
+    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+  }
+  pthread_mutex_unlock(&fork_lock);
+  return f;
+}
+
+static void doquit(int sig)
+{
+}
+
 struct
 thread_state {
   void *(*run)(void*);
@@ -115,9 +133,11 @@ thread_wrapper ( void *p )
 
   sigemptyset(&set);
   sigaddset(&set, SIGTERM);
+  sigaddset(&set, SIGQUIT);
   pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 
   signal(SIGTERM, doexit);
+  signal(SIGQUIT, doquit);
 
   /* Run */
   tvhtrace("thread", "created thread %ld [%s / %p(%p)]",

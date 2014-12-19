@@ -164,8 +164,8 @@ idnode_insert(idnode_t *in, const char *uuid, const idclass_t *class, int flags)
   } while (c != NULL && --retries > 0);
 
   if(c != NULL) {
-    fprintf(stderr, "Id node collision%s\n",
-            (flags & IDNODE_SHORT_UUID) ? " (short)" : "");
+    fprintf(stderr, "Id node collision (%s) %s\n",
+            uuid, (flags & IDNODE_SHORT_UUID) ? " (short)" : "");
     abort();
   }
   tvhtrace("idnode", "insert node %s", idnode_uuid_as_str(in));
@@ -342,10 +342,28 @@ idnode_get_display
   if (p) {
     if (p->rend)
       return p->rend(self);
-    if (p->islist) {
+    else if (p->islist) {
       htsmsg_t *l = (htsmsg_t*)p->get(self);
       if (l)
         return htsmsg_list_2_csv(l);
+    } else if (p->list) {
+      htsmsg_t *l = p->list(self), *m;
+      htsmsg_field_t *f;
+      uint32_t k, v;
+      char *r = NULL;
+      const char *s;
+      if (l && !idnode_get_u32(self, p->id, &v))
+        HTSMSG_FOREACH(f, l) {
+          m = htsmsg_field_get_map(f);
+          if (!htsmsg_get_u32(m, "key", &k) &&
+              (s = htsmsg_get_str(m, "val")) != NULL &&
+              v == k) {
+            r = strdup(s);
+            break;
+          }
+        }
+      htsmsg_destroy(l);
+      return r;
     }
   }
   return NULL;
@@ -955,18 +973,54 @@ idnode_set_add
     is->is_alloc = MAX(100, is->is_alloc * 2);
     is->is_array = realloc(is->is_array, is->is_alloc * sizeof(idnode_t*));
   }
-  is->is_array[is->is_count++] = in;
+  if (is->is_sorted) {
+    size_t i;
+    idnode_t **a = is->is_array;
+    for (i = is->is_count++; i > 0 && a[i - 1] > in; i--)
+      a[i] = a[i - 1];
+    a[i] = in;
+  } else {
+    is->is_array[is->is_count++] = in;
+  }
 }
 
-int
-idnode_set_exists
-  ( idnode_set_t *is, idnode_t * in )
+ssize_t
+idnode_set_find_index
+  ( idnode_set_t *is, idnode_t *in )
 {
-  int i;
-  for (i = 0; i < is->is_count; i++)
-    if (memcmp(is->is_array[i]->in_uuid, in->in_uuid, sizeof(in->in_uuid)) == 0)
-      return 1;
-  return 0;
+  ssize_t i;
+
+  if (is->is_sorted) {
+    idnode_t **a = is->is_array;
+    ssize_t first = 0, last = is->is_count - 1;
+    i = last / 2;
+    while (first <= last) {
+      if (a[i] < in)
+        first = i + 1;
+      else if (a[i] == in)
+        return i;
+      else
+        last = i - 1;
+      i = (first + last) / 2;
+    }
+  } else {
+    for (i = 0; i < is->is_count; i++)
+      if (is->is_array[i] == in)
+        return 1;
+  }
+  return -1;
+}
+
+void
+idnode_set_remove
+  ( idnode_set_t *is, idnode_t *in )
+{
+  ssize_t i = idnode_set_find_index(is, in);
+  if (i >= 0) {
+    memmove(&is->is_array[i], &is->is_array[i+1],
+            (is->is_count - i - 1) * sizeof(idnode_t *));
+    is->is_count--;
+  }
 }
 
 void

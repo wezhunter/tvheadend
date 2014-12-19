@@ -30,6 +30,7 @@
 #include <dirent.h>
 
 #include "tvheadend.h"
+#include "tvhpoll.h"
 #include "file.h"
 #include "spawn.h"
 
@@ -43,11 +44,145 @@ pthread_mutex_t spawn_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static LIST_HEAD(, spawn) spawns;
 
+static char *spawn_info_buf = NULL;
+static char *spawn_error_buf = NULL;
+
+static th_pipe_t spawn_pipe_info;
+static th_pipe_t spawn_pipe_error;
+
+static pthread_t spawn_pipe_tid;
+
+static int spawn_pipe_running;
+
 typedef struct spawn {
   LIST_ENTRY(spawn) link;
   pid_t pid;
   const char *name;
 } spawn_t;
+
+static void spawn_reaper(void);
+
+/*
+ *
+ */
+#define SPAWN_PIPE_READ_SIZE 4096
+
+static void
+spawn_pipe_read( th_pipe_t *p, char **_buf, int level )
+{
+  char *buf = *_buf, *s;
+  size_t len;
+  int r;
+
+  if (buf == NULL) {
+    buf = malloc(SPAWN_PIPE_READ_SIZE);
+    buf[0] = '\0';
+    buf[SPAWN_PIPE_READ_SIZE - 1] = 0;
+    *_buf = buf;
+  }
+  while (1) {
+    len = strlen(buf);
+    r = read(p->rd, buf + len, SPAWN_PIPE_READ_SIZE - 1 - len);
+    if (r < 1) {
+      if (errno == EAGAIN)
+        break;
+      if (ERRNO_AGAIN(errno))
+        continue;
+      break;
+    }
+    buf[len + r] = '\0';
+    tvhlog_hexdump("spawn", buf + len, r);
+    while (1) {
+      s = buf;
+      while (*s && *s != '\n' && *s != '\r')
+        s++;
+      if (*s == '\0')
+        break;
+      *s++ = '\0';
+      if (buf[0])
+        tvhlog(level, "spawn", "%s", buf);
+      memmove(buf, s, strlen(s) + 1);
+    }
+    if (strlen(buf) == SPAWN_PIPE_READ_SIZE - 1) {
+      tvherror("spawn", "pipe buffer full");
+      buf[0] = '\0';
+    }
+  }
+}
+
+static void *
+spawn_pipe_thread(void *aux)
+{
+  tvhpoll_event_t ev[2];
+  tvhpoll_t *efd = tvhpoll_create(2);
+  int nfds;
+
+  memset(ev, 0, sizeof(ev));
+  ev[0].events   = TVHPOLL_IN;
+  ev[0].fd       = spawn_pipe_info.rd;
+  ev[0].data.ptr = &spawn_pipe_info;
+  ev[1].events   = TVHPOLL_IN;
+  ev[1].fd       = spawn_pipe_error.rd;
+  ev[1].data.ptr = &spawn_pipe_error;
+  tvhpoll_add(efd, ev, 2);
+
+  while (spawn_pipe_running) {
+
+    nfds = tvhpoll_wait(efd, ev, 2, 500);
+
+    if (nfds > 0) {
+      spawn_pipe_read(&spawn_pipe_info, &spawn_info_buf, LOG_INFO);
+      spawn_pipe_read(&spawn_pipe_error, &spawn_error_buf, LOG_ERR);
+    }
+    spawn_reaper();
+
+  }
+
+  tvhpoll_destroy(efd);
+  return NULL;
+}
+
+static void
+spawn_pipe_write( th_pipe_t *p, const char *fmt, va_list ap )
+{
+  char buf[512], *s = buf;
+  int r;
+
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  while (*s) {
+    r = write(p->wr, s, strlen(s));
+    if (r < 0) {
+      if (errno == EAGAIN)
+        break;
+      if (ERRNO_AGAIN(errno))
+        continue;
+      break;
+    }
+    if (!r)
+      break;
+    s += r;
+  }
+}
+
+void
+spawn_info( const char *fmt, ... )
+{
+  va_list ap;
+
+  va_start(ap, fmt);
+  spawn_pipe_write(&spawn_pipe_info, fmt, ap);
+  va_end(ap);
+}
+
+void
+spawn_error( const char *fmt, ... )
+{
+  va_list ap;
+
+  va_start(ap, fmt);
+  spawn_pipe_write(&spawn_pipe_error, fmt, ap);
+  va_end(ap);
+}
 
 /*
  * Search PATH for executable
@@ -61,6 +196,13 @@ find_exec ( const char *name, char *out, size_t len )
   DIR *dir;
   struct dirent *de;
   struct stat st;
+  if (name[0] == '/') {
+    if (lstat(name, &st)) return 0;
+    if (!S_ISREG(st.st_mode) || !(st.st_mode & S_IEXEC)) return 0;
+    strncpy(out, name, len);
+    out[len-1] = '\0';
+    return 1;
+  }
   if (!(path = getenv("PATH"))) return 0;
   path = strdup(path);
   tmp  = strtok_r(path, ":", &tmp2);
@@ -72,6 +214,7 @@ find_exec ( const char *name, char *out, size_t len )
         if (lstat(bin, &st)) continue;
         if (!S_ISREG(st.st_mode) || !(st.st_mode & S_IEXEC)) continue;
         strncpy(out, bin, len);
+        out[len-1] = '\0';
         ret = 1;
         break;
       }
@@ -108,14 +251,17 @@ spawn_reap(char *stxt, size_t stxtlen)
     if (stxt)
       snprintf(stxt, stxtlen, "exited, status=%d", WEXITSTATUS(status));
   } else if (WIFSIGNALED(status)) {
-    snprintf(stxt, stxtlen, "killed by signal %d, "
-                            "stopped by signal %d",
-                            WTERMSIG(status),
-                            WSTOPSIG(status));
+    if (stxt)
+      snprintf(stxt, stxtlen, "killed by signal %d, "
+                              "stopped by signal %d",
+                              WTERMSIG(status),
+                              WSTOPSIG(status));
   } else if (WIFCONTINUED(status)) {
-    snprintf(stxt, stxtlen, "continued");
+    if (stxt)
+      snprintf(stxt, stxtlen, "continued");
   } else {
-    snprintf(stxt, stxtlen, "unknown status");
+    if (stxt)
+      snprintf(stxt, stxtlen, "unknown status");
   }
 
   if(s != NULL) {
@@ -130,12 +276,37 @@ spawn_reap(char *stxt, size_t stxtlen)
 /**
  * The reaper is called once a second to finish of any pending spawns
  */
-void
+static void
 spawn_reaper(void)
 {
   while (spawn_reap(NULL, 0) != -EAGAIN) ;
 }
 
+/**
+ * Kill the pid (only if waiting)
+ */
+int
+spawn_kill(pid_t pid, int sig)
+{
+  int r = -ESRCH;
+  spawn_t *s;
+
+  if (pid > 0) {
+    spawn_reaper();
+
+    pthread_mutex_lock(&spawn_mutex);
+    LIST_FOREACH(s, &spawns, link)
+      if(s->pid == pid)
+        break;
+    if (s) {
+      r = kill(pid, sig);
+      if (r < 0)
+        r = -errno;
+    }
+    pthread_mutex_unlock(&spawn_mutex);
+  }
+  return r;
+}
 
 /**
  * Enqueue a spawn on the pending spawn list
@@ -153,30 +324,120 @@ spawn_enq(const char *name, int pid)
 }
 
 
+/**
+ *
+ */
+int
+spawn_parse_args(char ***argv, int argc, const char *cmd, const char **replace)
+{
+  char *s, *f, *p, *a;
+  const char **r;
+  int i = 0, l;
 
+  if (!argv || !cmd)
+    return -1;
+
+  s = tvh_strdupa(cmd);
+  *argv = calloc(argc, sizeof(char *));
+
+  while (*s && i < argc - 1) {
+    f = s;
+    while (*s && *s != ' ') {
+      while (*s && *s != ' ' && *s != '\\')
+        s++;
+      if (*s == '\\') {
+        memmove(s, s + 1, strlen(s));
+        if (*s)
+          s++;
+      }
+    }
+    if (f != s) {
+      if (*s) {
+        *(char *)s = '\0';
+        s++;
+      }
+      for (r = replace; r && *r; r += 2) {
+        p = strstr(f, *r);
+        if (p) {
+          l = strlen(*r);
+          a = malloc(strlen(f) + strlen(r[1]) + 1);
+          *p = '\0';
+          strcpy(a, f);
+          strcat(a, r[1]);
+          strcat(a, p + l);
+          *argv[i++] = a;
+          break;
+        }
+      }
+      if (r && *r)
+        continue;
+      (*argv)[i++] = strdup(f);
+    }
+  }
+  (*argv)[i] = NULL;
+  return 0;
+}
 
 /**
- * Execute the given program and return its output in a malloc()ed buffer
- * 
- * *outp will point to the allocated buffer
- * The function will return the size of the buffer
+ *
  */
+void
+spawn_free_args(char **argv)
+{
+  char **a = argv;
+  for (; *a; a++)
+    free(*a);
+  free(argv);
+}
 
+/**
+ * Execute the given program and return its standard output as file-descriptor (pipe).
+ */
 int
-spawn_and_store_stdout(const char *prog, char *argv[], char **outp)
+spawn_and_give_stdout(const char *prog, char *argv[], char *envp[],
+                      int *rd, pid_t *pid, int redir_stderr)
 {
   pid_t p;
-  int fd[2], f;
+  int fd[2], f, i, maxfd;
   char bin[256];
   const char *local_argv[2] = { NULL, NULL };
+  char **e, **e0, **e2, **e3, *p1, *p2;
 
   if (*prog != '/' && *prog != '.') {
     if (!find_exec(prog, bin, sizeof(bin))) return -1;
     prog = bin;
   }
 
-  if(!argv) argv = (void *)local_argv;
+  if (!argv) argv = (void *)local_argv;
   if (!argv[0]) argv[0] = (char*)prog;
+
+  if (!envp || !envp[0]) {
+    e = environ;
+  } else {
+    for (i = 0, e2 = environ; *e2; i++, e2++);
+    for (f = 0, e2 = envp; *e2; f++, e2++);
+    e = alloca((i + f + 1) * sizeof(char *));
+    memcpy(e, environ, i * sizeof(char *));
+    e0 = e + i;
+    *e0 = NULL;
+    for (e2 = envp; *e2; e2++) {
+      for (e3 = e; *e3; e3++) {
+        p1 = strchr(*e2, '=');
+        p2 = strchr(*e3, '=');
+        if (p1 - *e2 == p2 - *e3 && !strncmp(*e2, *e3, p1 - *e2)) {
+          *e3 = *e2;
+          break;
+        }
+      }
+      if (!*e3) {
+        *e0++ = *e2;
+        *e0 = NULL;
+      }
+    }
+    *e0 = NULL;
+  }
+
+  maxfd = sysconf(_SC_OPEN_MAX);
 
   pthread_mutex_lock(&fork_lock);
 
@@ -189,33 +450,39 @@ spawn_and_store_stdout(const char *prog, char *argv[], char **outp)
 
   if(p == -1) {
     pthread_mutex_unlock(&fork_lock);
-    syslog(LOG_ERR, "spawn: Unable to fork() for \"%s\" -- %s",
-	   prog, strerror(errno));
+    tvherror("spawn", "Unable to fork() for \"%s\" -- %s",
+             prog, strerror(errno));
     return -1;
   }
 
   if(p == 0) {
-    close(0);
-    close(2);
-    close(fd[0]);
-    dup2(fd[1], 1);
-    close(fd[1]);
-
     f = open("/dev/null", O_RDWR);
     if(f == -1) {
-      syslog(LOG_ERR, 
-	     "spawn: pid %d cannot open /dev/null for redirect %s -- %s",
-	     getpid(), prog, strerror(errno));
+      spawn_error("pid %d cannot open /dev/null for redirect %s -- %s",
+                  getpid(), prog, strerror(errno));
       exit(1);
     }
 
+    close(0);
+    close(1);
+    close(2);
+
     dup2(f, 0);
-    dup2(f, 2);
+    dup2(fd[1], 1);
+    dup2(redir_stderr ? spawn_pipe_error.wr : f, 2);
+
+    close(fd[0]);
+    close(fd[1]);
     close(f);
 
-    execve(prog, argv, environ);
-    syslog(LOG_ERR, "spawn: pid %d cannot execute %s -- %s",
-	   getpid(), prog, strerror(errno));
+    spawn_info("Executing \"%s\"\n", prog);
+
+    for (f = 3; f < maxfd; f++)
+      close(f);
+
+    execve(prog, argv, e);
+    spawn_error("pid %d cannot execute %s -- %s\n",
+                getpid(), prog, strerror(errno));
     exit(1);
   }
 
@@ -225,9 +492,11 @@ spawn_and_store_stdout(const char *prog, char *argv[], char **outp)
 
   close(fd[1]);
 
-  return file_readall(fd[0], outp);
+  *rd = fd[0];
+  if (pid)
+    *pid = p;
+  return 0;
 }
-
 
 /**
  * Execute the given program with arguments
@@ -236,9 +505,9 @@ spawn_and_store_stdout(const char *prog, char *argv[], char **outp)
  * The function will return the size of the buffer
  */
 int
-spawnv(const char *prog, char *argv[])
+spawnv(const char *prog, char *argv[], pid_t *pid, int redir_stdout, int redir_stderr)
 {
-  pid_t p;
+  pid_t p, f, maxfd;
   char bin[256];
   const char *local_argv[2] = { NULL, NULL };
 
@@ -250,25 +519,77 @@ spawnv(const char *prog, char *argv[])
   if(!argv) argv = (void *)local_argv;
   if (!argv[0]) argv[0] = (char*)prog;
 
+  maxfd = sysconf(_SC_OPEN_MAX);
+
+  pthread_mutex_lock(&fork_lock);
+
   p = fork();
 
   if(p == -1) {
-    syslog(LOG_ERR, "spawn: Unable to fork() for \"%s\" -- %s",
-	   prog, strerror(errno));
+    pthread_mutex_unlock(&fork_lock);
+    tvherror("spawn", "Unable to fork() for \"%s\" -- %s",
+	     prog, strerror(errno));
     return -1;
   }
 
   if(p == 0) {
+    f = open("/dev/null", O_RDWR);
+    if(f == -1) {
+      spawn_error("pid %d cannot open /dev/null for redirect %s -- %s",
+                  getpid(), prog, strerror(errno));
+      exit(1);
+    }
+
     close(0);
+    close(1);
     close(2);
-    syslog(LOG_INFO, "spawn: Executing \"%s\"", prog);
+
+    dup2(f, 0);
+    dup2(redir_stdout ? spawn_pipe_info.wr : f, 1);
+    dup2(redir_stderr ? spawn_pipe_error.wr : f, 2);
+
+    close(f);
+
+    spawn_info("Executing \"%s\"\n", prog);
+
+    for (f = 3; f < maxfd; f++)
+      close(f);
+
     execve(prog, argv, environ);
-    syslog(LOG_ERR, "spawn: pid %d cannot execute %s -- %s",
-	   getpid(), prog, strerror(errno));
+    spawn_error("pid %d cannot execute %s -- %s\n",
+	        getpid(), prog, strerror(errno));
     close(1);
     exit(1);
   }
 
+  pthread_mutex_unlock(&fork_lock);
+
   spawn_enq(prog, p);
+
+  if (pid)
+    *pid = p;
+
   return 0;
+}
+
+/*
+ *
+ */
+void spawn_init(void)
+{
+  tvh_pipe(O_NONBLOCK, &spawn_pipe_info);
+  tvh_pipe(O_NONBLOCK, &spawn_pipe_error);
+  spawn_pipe_running = 1;
+  pthread_create(&spawn_pipe_tid, NULL, spawn_pipe_thread, NULL);
+}
+
+void spawn_done(void)
+{
+  spawn_pipe_running = 0;
+  pthread_kill(spawn_pipe_tid, SIGTERM);
+  pthread_join(spawn_pipe_tid, NULL);
+  tvh_pipe_close(&spawn_pipe_error);
+  tvh_pipe_close(&spawn_pipe_info);
+  free(spawn_error_buf);
+  free(spawn_info_buf);
 }

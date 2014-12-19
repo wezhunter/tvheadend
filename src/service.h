@@ -183,6 +183,24 @@ void service_instance_list_clear(service_instance_list_t *sil);
 /**
  *
  */
+typedef struct service_lcn {
+  LIST_ENTRY(service_lcn) sl_link;
+  void     *sl_bouquet;
+  uint64_t  sl_lcn;
+  uint8_t   sl_seen;
+} service_lcn_t;
+
+
+/**
+ *
+ */
+#define SERVICE_AUTO_NORMAL       0
+#define SERVICE_AUTO_OFF          1
+#define SERVICE_AUTO_PAT_MISSING  2
+
+/**
+ *
+ */
 typedef struct service {
   idnode_t s_id;
 
@@ -269,6 +287,7 @@ typedef struct service {
    * subscription scheduling.
    */
   int s_enabled;
+  int s_auto;
 
   LIST_ENTRY(service) s_active_link;
 
@@ -299,6 +318,7 @@ typedef struct service {
   const char *(*s_channel_name)   (struct service *);
   const char *(*s_provider_name)  (struct service *);
   const char *(*s_channel_icon)   (struct service *);
+  void        (*s_mapped)         (struct service *);
 
   /**
    * Name usable for displaying to user
@@ -386,11 +406,12 @@ typedef struct service {
 #define TSS_PACKETS          0x8
 #define TSS_NO_ACCESS        0x10
 
-#define TSS_GRACEPERIOD      0x8000
 
   // Errors
-#define TSS_NO_DESCRAMBLER   0x10000
-#define TSS_TIMEOUT          0x20000
+#define TSS_GRACEPERIOD      0x10000
+#define TSS_NO_DESCRAMBLER   0x20000
+#define TSS_TIMEOUT          0x40000
+#define TSS_TUNING           0x80000
 
 #define TSS_ERRORS           0xffff0000
 
@@ -399,6 +420,7 @@ typedef struct service {
    *
    */
   int s_streaming_live;
+  int s_running;
 
   // Live status
 #define TSS_LIVE             0x01
@@ -442,6 +464,11 @@ typedef struct service {
   tvhlog_limit_t s_tei_log;
 
   int64_t s_current_pts;
+
+  /*
+   * Local channel numbers per bouquet
+   */
+  LIST_HEAD(,service_lcn) s_lcns;
 
 } service_t;
 
@@ -503,6 +530,8 @@ int service_is_other(service_t *t);
 
 int service_is_encrypted ( service_t *t );
 
+void service_set_enabled ( service_t *t, int enabled, int _auto );
+
 void service_destroy(service_t *t, int delconf);
 
 void service_remove_subscriber(service_t *t, struct th_subscription *s,
@@ -529,7 +558,7 @@ service_reset_streaming_status_flags(service_t *t, int flag)
 struct streaming_start;
 struct streaming_start *service_build_stream_start(service_t *t);
 
-void service_restart(service_t *t, int had_components);
+void service_restart(service_t *t);
 
 void service_stream_destroy(service_t *t, elementary_stream_t *st);
 
@@ -572,5 +601,7 @@ const char *service_get_channel_name (service_t *s);
 const char *service_get_full_channel_name (service_t *s);
 int64_t     service_get_channel_number (service_t *s);
 const char *service_get_channel_icon (service_t *s);
+
+void service_mapped (service_t *s);
 
 #endif // SERVICE_H__

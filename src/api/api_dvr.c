@@ -160,16 +160,19 @@ static htsmsg_t *
 api_dvr_entry_create_from_single(htsmsg_t *args)
 {
   htsmsg_t *entries, *m;
-  const char *s1, *s2;
+  const char *s1, *s2, *s3;
 
   if (!(s1 = htsmsg_get_str(args, "config_uuid")))
     return NULL;
   if (!(s2 = htsmsg_get_str(args, "event_id")))
     return NULL;
+  s3 = htsmsg_get_str(args, "comment");
   entries = htsmsg_create_list();
   m = htsmsg_create_map();
   htsmsg_add_str(m, "config_uuid", s1);
   htsmsg_add_str(m, "event_id", s2);
+  if (s3)
+    htsmsg_add_str(m, "comment", s3);
   htsmsg_add_msg(entries, NULL, m);
   return entries;
 }
@@ -179,7 +182,7 @@ api_dvr_entry_create_by_event
   ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
 {
   dvr_entry_t *de;
-  const char *config_uuid;
+  const char *config_uuid, *comment;
   epg_broadcast_t *e;
   htsmsg_t *entries, *entries2 = NULL, *m;
   htsmsg_field_t *f;
@@ -199,14 +202,17 @@ api_dvr_entry_create_by_event
       continue;
 
     config_uuid = htsmsg_get_str(m, "config_uuid");
+    comment = htsmsg_get_str(m, "comment");
 
     pthread_mutex_lock(&global_lock);
     if ((e = epg_broadcast_find_by_id(strtoll(s, NULL, 10)))) {
       dvr_config_t *cfg = dvr_config_find_by_list(perm->aa_dvrcfgs, config_uuid);
       if (cfg) {
         de = dvr_entry_create_by_event(idnode_uuid_as_str(&cfg->dvr_id),
-                                       e, 0, 0, perm->aa_representative,
-                                       NULL, DVR_PRIO_NORMAL, 0);
+                                       e, 0, 0,
+                                       perm->aa_username,
+                                       perm->aa_representative,
+                                       NULL, DVR_PRIO_NORMAL, 0, comment);
         if (de)
           dvr_entry_save(de);
       }
@@ -253,6 +259,8 @@ api_dvr_autorec_create
   if (!(conf  = htsmsg_get_map(args, "conf")))
     return EINVAL;
 
+  if (perm->aa_username)
+    htsmsg_set_str(conf, "owner", perm->aa_username);
   if (perm->aa_representative)
     htsmsg_set_str(conf, "creator", perm->aa_representative);
 
@@ -297,7 +305,9 @@ api_dvr_autorec_create_by_series
       dvr_config_t *cfg = dvr_config_find_by_list(perm->aa_dvrcfgs, config_uuid);
       if (cfg) {
         dae = dvr_autorec_add_series_link(idnode_uuid_as_str(&cfg->dvr_id),
-                                          e, perm->aa_representative,
+                                          e,
+                                          perm->aa_username,
+                                          perm->aa_representative,
                                           "Created from EPG query");
         if (dae) {
           dvr_autorec_save(dae);
@@ -334,6 +344,8 @@ api_dvr_timerec_create
   if (!(conf  = htsmsg_get_map(args, "conf")))
     return EINVAL;
 
+  if (perm->aa_username)
+    htsmsg_set_str(conf, "owner", perm->aa_username);
   if (perm->aa_representative)
     htsmsg_set_str(conf, "creator", perm->aa_representative);
 
@@ -351,8 +363,10 @@ api_dvr_timerec_create
 void api_dvr_init ( void )
 {
   static api_hook_t ah[] = {
-    { "dvr/config/class",          ACCESS_RECORDER, api_idnode_class, (void*)&dvr_config_class },
-    { "dvr/config/grid",           ACCESS_RECORDER, api_idnode_grid, api_dvr_config_grid },
+    { "dvr/config/class",          ACCESS_OR|ACCESS_ADMIN|ACCESS_RECORDER,
+                                     api_idnode_class, (void*)&dvr_config_class },
+    { "dvr/config/grid",           ACCESS_OR|ACCESS_ADMIN|ACCESS_RECORDER,
+                                     api_idnode_grid, api_dvr_config_grid },
     { "dvr/config/create",         ACCESS_ADMIN, api_dvr_config_create, NULL },
 
     { "dvr/entry/class",           ACCESS_RECORDER, api_idnode_class, (void*)&dvr_entry_class },

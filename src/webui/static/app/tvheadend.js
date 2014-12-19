@@ -151,6 +151,15 @@ Ext.Ajax.request({
     }
 });
 
+/*
+ *
+ */
+tvheadend.niceDate = function(dt) {
+    var d = new Date(dt);
+    return '<div class="x-nice-date">' + d.toLocaleDateString() + '</div>' +
+           '<div class="x-nice-time">' + d.toLocaleTimeString() + '</div>';
+}
+
 /**
  * Displays a mediaplayer using the html5 video element
  */
@@ -366,6 +375,7 @@ function accessUpdate(o) {
         });
         tvheadend.channel_tab(chepg);
         tvheadend.cteditor(chepg);
+        tvheadend.bouquet(chepg);
         tvheadend.epggrab(chepg);
 
         cp.add(chepg);

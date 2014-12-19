@@ -166,10 +166,11 @@ void
 descrambler_keys ( th_descrambler_t *td, int type,
                    const uint8_t *even, const uint8_t *odd )
 {
+  static uint8_t empty[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
   service_t *t = td->td_service;
   th_descrambler_runtime_t *dr;
   th_descrambler_t *td2;
-  int i, j = 0;
+  int j = 0;
 
   if (t == NULL || (dr = t->s_descramble) == NULL) {
     td->td_keystate = DS_FORBIDDEN;
@@ -195,22 +196,20 @@ descrambler_keys ( th_descrambler_t *td, int type,
       goto fin;
     }
 
-  for (i = 0; i < dr->dr_csa.csa_keylen; i++)
-    if (even[i]) {
-      j++;
-      tvhcsa_set_key_even(&dr->dr_csa, even);
-      dr->dr_key_valid |= 0x40;
-      dr->dr_key_timestamp[0] = dispatch_clock;
-      break;
-    }
-  for (i = 0; i < dr->dr_csa.csa_keylen; i++)
-    if (odd[i]) {
-      j++;
-      tvhcsa_set_key_odd(&dr->dr_csa, odd);
-      dr->dr_key_valid |= 0x80;
-      dr->dr_key_timestamp[1] = dispatch_clock;
-      break;
-    }
+  if (memcmp(empty, even, dr->dr_csa.csa_keylen)) {
+    j++;
+    memcpy(dr->dr_key_even, even, dr->dr_csa.csa_keylen);
+    dr->dr_key_changed |= 1;
+    dr->dr_key_valid |= 0x40;
+    dr->dr_key_timestamp[0] = dispatch_clock;
+  }
+  if (memcmp(empty, odd, dr->dr_csa.csa_keylen)) {
+    j++;
+    memcpy(dr->dr_key_odd, odd, dr->dr_csa.csa_keylen);
+    dr->dr_key_changed |= 2;
+    dr->dr_key_valid |= 0x80;
+    dr->dr_key_timestamp[1] = dispatch_clock;
+  }
 
   if (j) {
     if (td->td_keystate != DS_RESOLVED)
@@ -252,6 +251,40 @@ descrambler_keys ( th_descrambler_t *td, int type,
 
 fin:
   pthread_mutex_unlock(&t->s_stream_mutex);
+#if ENABLE_TSDEBUG
+  if (j) {
+    tsdebug_packet_t *tp = malloc(sizeof(*tp));
+    uint16_t keylen = dr->dr_csa.csa_keylen;
+    uint16_t sid = ((mpegts_service_t *)td->td_service)->s_dvb_service_id;
+    uint32_t pos = 0, crc;
+    mpegts_mux_t *mm = ((mpegts_service_t *)td->td_service)->s_dvb_mux;
+    if (!mm->mm_active)
+      return;
+    pthread_mutex_lock(&mm->mm_active->mmi_input->mi_output_lock);
+    tp->pos = mm->mm_tsdebug_pos;
+    memset(tp->pkt, 0xff, sizeof(tp->pkt));
+    tp->pkt[pos++] = 0x47; /* sync byte */
+    tp->pkt[pos++] = 0x1f; /* PID MSB */
+    tp->pkt[pos++] = 0xff; /* PID LSB */
+    tp->pkt[pos++] = 0x00; /* CC */
+    memcpy(tp->pkt + pos, "TVHeadendDescramblerKeys", 24);
+    pos += 24;
+    tp->pkt[pos++] = type & 0xff;
+    tp->pkt[pos++] = keylen & 0xff;
+    tp->pkt[pos++] = (sid >> 8) & 0xff;
+    tp->pkt[pos++] = sid & 0xff;
+    memcpy(tp->pkt + pos, even, keylen);
+    memcpy(tp->pkt + pos + keylen, odd, keylen);
+    pos += 2 * keylen;
+    crc = tvh_crc32(tp->pkt, pos, 0x859aa5ba);
+    tp->pkt[pos++] = (crc >> 24) & 0xff;
+    tp->pkt[pos++] = (crc >> 16) & 0xff;
+    tp->pkt[pos++] = (crc >> 8) & 0xff;
+    tp->pkt[pos++] = crc & 0xff;
+    TAILQ_INSERT_HEAD(&mm->mm_tsdebug_packets, tp, link);
+    pthread_mutex_unlock(&mm->mm_active->mmi_input->mi_output_lock);
+  }
+#endif
 }
 
 static void
@@ -288,7 +321,7 @@ key_update( th_descrambler_runtime_t *dr, uint8_t key )
   if (dr->dr_key_start)
     dr->dr_key_start = dispatch_clock;
   else
-    /* We don't knoe the exact start key switch time */
+    /* We don't know the exact start key switch time */
     dr->dr_key_start = dispatch_clock - 60;
 }
 
@@ -328,6 +361,7 @@ descrambler_descramble ( service_t *t,
 
   if (dr == NULL)
     return -1;
+
   count = failed = 0;
   LIST_FOREACH(td, &t->s_descramblers, td_service_link) {
     count++;
@@ -337,6 +371,16 @@ descrambler_descramble ( service_t *t,
     }
     if (td->td_keystate != DS_RESOLVED)
       continue;
+
+    if (dr->dr_key_changed) {
+      dr->dr_csa.csa_flush(&dr->dr_csa, (mpegts_service_t *)td->td_service);
+      if (dr->dr_key_changed & 1)
+        tvhcsa_set_key_even(&dr->dr_csa, dr->dr_key_even);
+      if (dr->dr_key_changed & 2)
+        tvhcsa_set_key_odd(&dr->dr_csa, dr->dr_key_odd);
+      dr->dr_key_changed = 0;
+    }
+
     if (dr->dr_buf.sb_ptr > 0) {
       for (off = 0, size = dr->dr_buf.sb_ptr; off < size; off += 188) {
         tsb2 = dr->dr_buf.sb_data + off;
@@ -369,6 +413,7 @@ descrambler_descramble ( service_t *t,
         service_reset_streaming_status_flags(t, TSS_NO_ACCESS);
       sbuf_free(&dr->dr_buf);
     }
+
     ki = tsb[3];
     if ((ki & 0x80) != 0x00) {
       if (key_valid(dr, ki) == 0) {

@@ -57,6 +57,7 @@ typedef struct access_entry {
 
   int ae_streaming;
   int ae_adv_streaming;
+  int ae_htsp_streaming;
 
   struct profile *ae_profile;
   LIST_ENTRY(access_entry) ae_profile_link;
@@ -64,14 +65,15 @@ typedef struct access_entry {
   uint32_t ae_conn_limit;
 
   int ae_dvr;
+  int ae_htsp_dvr;
   struct dvr_config *ae_dvr_config;
   LIST_ENTRY(access_entry) ae_dvr_config_link;
 
   int ae_webui;
   int ae_admin;
 
-  uint32_t ae_chmin;
-  uint32_t ae_chmax;
+  uint64_t ae_chmin;
+  uint64_t ae_chmax;
 
   struct channel_tag *ae_chtag;
   LIST_ENTRY(access_entry) ae_channel_tag_link;
@@ -89,8 +91,8 @@ typedef struct access {
   uint32_t  aa_rights;
   htsmsg_t *aa_profiles;
   htsmsg_t *aa_dvrcfgs;
-  uint32_t  aa_chmin;
-  uint32_t  aa_chmax;
+  uint64_t  aa_chmin;
+  uint64_t  aa_chmax;
   htsmsg_t *aa_chtags;
   int       aa_match;
   uint32_t  aa_conn_limit;
@@ -113,12 +115,16 @@ typedef struct access_ticket {
 #define ACCESS_ANONYMOUS          0
 #define ACCESS_STREAMING          (1<<0)
 #define ACCESS_ADVANCED_STREAMING (1<<1)
-#define ACCESS_WEB_INTERFACE      (1<<2)
-#define ACCESS_RECORDER           (1<<3)
-#define ACCESS_ADMIN              (1<<4)
+#define ACCESS_HTSP_STREAMING     (1<<2)
+#define ACCESS_WEB_INTERFACE      (1<<3)
+#define ACCESS_RECORDER           (1<<4)
+#define ACCESS_HTSP_RECORDER      (1<<5)
+#define ACCESS_ADMIN              (1<<6)
+#define ACCESS_OR                 (1<<30)
 
 #define ACCESS_FULL \
   (ACCESS_STREAMING | ACCESS_ADVANCED_STREAMING | \
+   ACCESS_HTSP_STREAMING | ACCESS_HTSP_RECORDER | \
    ACCESS_WEB_INTERFACE | ACCESS_RECORDER | ACCESS_ADMIN)
 
 /**
@@ -153,7 +159,9 @@ int access_verify(const char *username, const char *password,
 		  struct sockaddr *src, uint32_t mask);
 
 static inline int access_verify2(access_t *a, uint32_t mask)
-  { return (a->aa_rights & mask) == mask ? 0 : -1; }
+  { return (mask & ACCESS_OR) ?
+      ((a->aa_rights & mask) ? 0 : -1) :
+      ((a->aa_rights & mask) == mask ? 0 : -1); }
 
 int access_verify_list(htsmsg_t *list, const char *item);
 

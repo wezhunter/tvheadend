@@ -74,7 +74,7 @@
 }
 
 .x-tree-node-leaf .x-tree-node-icon {
-    background-image:url(../icons/tv_cards.gif);
+    background-image: url(../icons/tv_cards.png);
 }
 
 .ux-mselect {
@@ -196,6 +196,10 @@
 
 .rec {
     background-image: url(../icons/rec.png) !important;
+}
+
+.stopRec {
+    background-image: url(../icons/stop_rec.png) !important;
 }
 
 .info {
@@ -478,6 +482,22 @@
     background-image: url(../icons/time_schedules.png) !important;
 }
 
+.download{
+    background-image: url(../icons/download.png) !important;
+}
+
+.abort{
+    background-image: url(../icons/abort.png) !important;
+}
+
+.bouquets{
+    background-image: url(../icons/bouquets.png) !important;
+}
+
+.cancelButton{
+    background-image: url(../icons/cancel_button.png) !important;
+}
+
 .x-linked {
     display: inline-block;
     background-image: url(../icons/linked.gif) !important;
@@ -488,6 +508,17 @@
 .x-smallhdr {
     float: left;
     width: 100px;
+}
+
+.x-nice-date {
+    display: inline-block;
+    width: 6em;
+}
+
+.x-nice-time {
+    display: inline-block;
+    width: 4em;
+    text-align: right;
 }
 
 .x-epg-title {
@@ -502,8 +533,19 @@
     font-weight: bold;
 }
 
-.x-epg-summary {
+.x-epg-time {
+    font-style: italic;
     margin: 5px;
+}
+
+.x-epg-prefix {
+    display: inline-block;
+    width: 12em;
+    font-weight: bold;
+}
+
+.x-epg-summary {
+    margin: 10px 5px 5px 5px;
     font-weight: bold;
 }
 
@@ -520,11 +562,6 @@
 
 .x-epg-meta {
     font-style: italic;
-    margin: 5px;
-}
-
-.x-epg-action {
-    font-weight: bold;
     margin: 5px;
 }
 

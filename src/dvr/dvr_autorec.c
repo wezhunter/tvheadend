@@ -126,14 +126,16 @@ autorec_cmp(dvr_autorec_entry_t *dae, epg_broadcast_t *e)
       return 0;
   }
 
-  if(dae->dae_start >= 0) {
-    struct tm a_time;
-    struct tm ev_time;
+  if(dae->dae_start >= 0 && dae->dae_start_window >= 0) {
+    struct tm a_time, ev_time;
+    time_t ta, te;
     localtime_r(&e->start, &a_time);
-    localtime_r(&e->start, &ev_time);
+    ev_time = a_time;
     a_time.tm_min = dae->dae_start % 60;
     a_time.tm_hour = dae->dae_start / 60;
-    if(abs(mktime(&a_time) - mktime(&ev_time)) > 900)
+    ta = mktime(&a_time);
+    te = mktime(&ev_time);
+    if(ta > te || te > ta + dae->dae_start_window * 60)
       return 0;
   }
 
@@ -191,11 +193,11 @@ dvr_autorec_create(const char *uuid, htsmsg_t *conf)
 
 dvr_autorec_entry_t*
 dvr_autorec_create_htsp(const char *dvr_config_name, const char *title,
-                            channel_t *ch, uint32_t aroundTime, uint32_t weekdays,
-                            time_t start_extra, time_t stop_extra,
+                            channel_t *ch, uint32_t start, uint32_t start_window,
+                            uint32_t weekdays, time_t start_extra, time_t stop_extra,
                             dvr_prio_t pri, int retention,
                             int min_duration, int max_duration,
-                            const char *creator, const char *comment)
+                            const char *owner, const char *creator, const char *comment)
 {
   dvr_autorec_entry_t *dae;
   htsmsg_t *conf, *days;
@@ -212,11 +214,14 @@ dvr_autorec_create_htsp(const char *dvr_config_name, const char *title,
   htsmsg_add_s64(conf, "stop_extra",  stop_extra);
   htsmsg_add_str(conf, "title",       title);
   htsmsg_add_str(conf, "config_name", dvr_config_name ?: "");
+  htsmsg_add_str(conf, "owner",       owner ?: "");
   htsmsg_add_str(conf, "creator",     creator ?: "");
   htsmsg_add_str(conf, "comment",     comment ?: "");
 
-  if (aroundTime)
-    htsmsg_add_u32(conf, "start", (aroundTime-1));
+  if (start >= 0)
+    htsmsg_add_u32(conf, "start", start);
+  if (start_window >= 0)
+    htsmsg_add_u32(conf, "start_window", start_window);
   if (ch)
     htsmsg_add_str(conf, "channel", idnode_uuid_as_str(&ch->ch_id));
 
@@ -244,7 +249,8 @@ dvr_autorec_create_htsp(const char *dvr_config_name, const char *title,
 dvr_autorec_entry_t *
 dvr_autorec_add_series_link(const char *dvr_config_name,
                             epg_broadcast_t *event,
-                            const char *creator, const char *comment)
+                            const char *owner, const char *creator,
+                            const char *comment)
 {
   dvr_autorec_entry_t *dae;
   htsmsg_t *conf;
@@ -260,6 +266,7 @@ dvr_autorec_add_series_link(const char *dvr_config_name,
   htsmsg_add_str(conf, "channel", channel_get_name(event->channel));
   if (event->serieslink)
     htsmsg_add_str(conf, "serieslink", event->serieslink->uri);
+  htsmsg_add_str(conf, "owner", owner ?: "");
   htsmsg_add_str(conf, "creator", creator ?: "");
   htsmsg_add_str(conf, "comment", comment ?: "");
   dae = dvr_autorec_create(NULL, conf);
@@ -287,6 +294,7 @@ autorec_entry_destroy(dvr_autorec_entry_t *dae, int delconf)
     LIST_REMOVE(dae, dae_config_link);
 
   free(dae->dae_name);
+  free(dae->dae_owner);
   free(dae->dae_creator);
   free(dae->dae_comment);
 
@@ -528,6 +536,12 @@ static htsmsg_t *
 dvr_autorec_entry_class_time_list_(void *o)
 {
   return dvr_autorec_entry_class_time_list(o, "Any");
+}
+
+static htsmsg_t *
+dvr_autorec_entry_class_time_window_list(void *o)
+{
+  return dvr_entry_class_duration_list(o, "Exact", 24*60, 60);
 }
 
 static htsmsg_t *
@@ -841,11 +855,18 @@ const idclass_t dvr_autorec_entry_class = {
     {
       .type     = PT_STR,
       .id       = "start",
-      .name     = "Starting Around",
+      .name     = "Start Time",
       .set      = dvr_autorec_entry_class_start_set,
       .get      = dvr_autorec_entry_class_start_get,
       .list     = dvr_autorec_entry_class_time_list_,
       .opts     = PO_SORTKEY
+    },
+    {
+      .type     = PT_INT,
+      .id       = "start_window",
+      .name     = "Start Window",
+      .list     = dvr_autorec_entry_class_time_window_list,
+      .off      = offsetof(dvr_autorec_entry_t, dae_start_window),
     },
     {
       .type     = PT_TIME,
@@ -940,6 +961,13 @@ const idclass_t dvr_autorec_entry_class = {
       .name     = "Series Link",
       .set      = dvr_autorec_entry_class_series_link_set,
       .get      = dvr_autorec_entry_class_series_link_get,
+      .opts     = PO_RDONLY,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "owner",
+      .name     = "Owner",
+      .off      = offsetof(dvr_autorec_entry_t, dae_owner),
       .opts     = PO_RDONLY,
     },
     {
@@ -1047,6 +1075,7 @@ dvr_autorec_changed(dvr_autorec_entry_t *dae, int purge)
     dvr_autorec_purge_spawns(dae, 1);
 
   CHANNEL_FOREACH(ch) {
+    if (!ch->ch_enabled) continue;
     RB_FOREACH(e, &ch->ch_epg_schedule, sched_link) {
       if(autorec_cmp(dae, e))
         dvr_entry_create_by_autorec(e, dae);

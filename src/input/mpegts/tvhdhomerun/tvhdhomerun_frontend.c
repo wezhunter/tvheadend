@@ -1,4 +1,3 @@
-
 /*
  *  Tvheadend - HDHomeRun DVB frontend
  *
@@ -28,17 +27,6 @@ static void tvhdhomerun_device_open_pid(tvhdhomerun_frontend_t *hfe, mpegts_pid_
 
 static mpegts_pid_t * tvhdhomerun_frontend_open_pid( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner );
 
-static tvhdhomerun_frontend_t *
-tvhdhomerun_frontend_find_by_number( tvhdhomerun_device_t *hd, int num )
-{
-  tvhdhomerun_frontend_t *hfe;
-
-  TAILQ_FOREACH(hfe, &hd->hd_frontends, hf_link)
-    if (hfe->hf_tunerNumber == num)
-      return hfe;
-  return NULL;
-}
-
 static int
 tvhdhomerun_frontend_is_free ( mpegts_input_t *mi )
 {
@@ -64,12 +52,9 @@ tvhdhomerun_frontend_get_grace ( mpegts_input_t *mi, mpegts_mux_t *mm )
 }
 
 static int
-tvhdhomerun_frontend_is_enabled ( mpegts_input_t *mi, mpegts_mux_t *mm,
-								  const char *reason )
+tvhdhomerun_frontend_is_enabled ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags )
 {
-  tvhdhomerun_frontend_t *hfe = (tvhdhomerun_frontend_t*)mi;
-  if (!hfe->mi_enabled) return 0;
-  return 1;
+  return mpegts_input_is_enabled(mi, mm, flags);
 }
 
 static void *
@@ -114,7 +99,7 @@ tvhdhomerun_frontend_input_thread ( void *aux )
   local_ip = hdhomerun_device_get_local_machine_addr(hfe->hf_hdhomerun_tuner);
 
   /* first setup a local socket for the device to stream to */
-  sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+  sockfd = tvh_socket(AF_INET, SOCK_DGRAM, 0);
   if(sockfd == -1) {
     tvherror("stvhdhomerun", "failed to open socket (%d)", errno);
     return NULL;
@@ -203,7 +188,7 @@ tvhdhomerun_frontend_input_thread ( void *aux )
     if (nfds < 1) continue;
     if (ev[0].data.fd != sockfd) break;
 
-    if((r = sbuf_read(&sb, sockfd)) < 0) {
+    if((r = sbuf_tsdebug_read(mmi->mmi_mux, &sb, sockfd)) < 0) {
       /* whoopsy */
       if(ERRNO_AGAIN(errno))
         continue;
@@ -517,14 +502,11 @@ tvhdhomerun_frontend_save ( tvhdhomerun_frontend_t *hfe, htsmsg_t *fe )
   /* Save frontend */
   mpegts_input_save((mpegts_input_t*)hfe, m);
   htsmsg_add_str(m, "type", dvb_type2str(hfe->hf_type));
+  htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&hfe->ti_id));
 
   /* Add to list */
   snprintf(id, sizeof(id), "%s #%d", dvb_type2str(hfe->hf_type), hfe->hf_tunerNumber);
   htsmsg_add_msg(fe, id, m);
-  if (hfe->hf_master) {
-    snprintf(id, sizeof(id), "master for #%d", hfe->hf_tunerNumber);
-    htsmsg_add_u32(fe, id, hfe->hf_master);
-  }
 }
 
 
@@ -606,7 +588,6 @@ tvhdhomerun_frontend_create(tvhdhomerun_device_t *hd, struct hdhomerun_discover_
   const char *uuid = NULL;
   char id[16];
   tvhdhomerun_frontend_t *hfe;
-  uint32_t master = 0;
 
   /* Internal config ID */
   snprintf(id, sizeof(id), "%s #%u", dvb_type2str(type), frontend_number);
@@ -630,7 +611,6 @@ tvhdhomerun_frontend_create(tvhdhomerun_device_t *hd, struct hdhomerun_discover_
   hfe = calloc(1, sizeof(tvhdhomerun_frontend_t));
   hfe->hf_device   = hd;
   hfe->hf_type     = type;
-  hfe->hf_master   = master;
 
   hfe->hf_hdhomerun_tuner = hdhomerun_device_create(discover_info->device_id, discover_info->ip_addr, frontend_number, hdhomerun_debug_obj);
 
@@ -671,18 +651,6 @@ tvhdhomerun_frontend_create(tvhdhomerun_device_t *hd, struct hdhomerun_discover_
   /* Adapter link */
   hfe->hf_device = hd;
   TAILQ_INSERT_TAIL(&hd->hd_frontends, hfe, hf_link);
-
-  /* Slave networks update */
-  if (master) {
-    tvhdhomerun_frontend_t *hfe2 = tvhdhomerun_frontend_find_by_number(hfe->hf_device, master);
-    if (hfe2) {
-      htsmsg_t *l = (htsmsg_t *)mpegts_input_class_network_get(hfe2);
-      if (l) {
-        mpegts_input_class_network_set(hfe, l);
-        htsmsg_destroy(l);
-      }
-    }
-  }
 
   /* mutex init */
   pthread_mutex_init(&hfe->hf_hdhomerun_device_mutex, NULL);
